@@ -3,8 +3,6 @@
     backdrop-filter: invert(1) hue-rotate(180deg);
   }
   .coffee {
-    display: block;
-    margin: auto;
     filter: invert(1) hue-rotate(180deg);
     display: flex;
     align-items: center;
