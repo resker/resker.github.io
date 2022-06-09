@@ -4,6 +4,7 @@
   }
   .coffee {
     filter: invert(1) hue-rotate(180deg);
+    width: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
