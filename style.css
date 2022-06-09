@@ -6,8 +6,8 @@
     display: block;
     margin: auto;
     filter: invert(1) hue-rotate(180deg);
-    height: 0;
-    padding: 0; /* reset */
-    padding-bottom: calc(100% * 3 / 4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 }
