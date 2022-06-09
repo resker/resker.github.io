@@ -3,7 +3,7 @@
     backdrop-filter: invert(1) hue-rotate(180deg);
   }
   .coffee {
-    display: inline-block;
+    display: block;
     margin: auto;
     filter: invert(1) hue-rotate(180deg);
   }
