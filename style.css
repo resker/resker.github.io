@@ -6,7 +6,7 @@
     display: block;
     margin: auto;
     filter: invert(1) hue-rotate(180deg);
-    height: 15%;
-    width:  15%;
+    height: "15%";
+    width:  "15%";
   }
 }
