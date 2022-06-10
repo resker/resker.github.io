@@ -6,12 +6,8 @@
 }
 
 #coffee {
-  display: flex;
-  align-items: center;
   width: 25%;
 }
 
 #cup {
-  margin: 0 auto;
-  display: block;
 }
