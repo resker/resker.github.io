@@ -1,11 +1,16 @@
 @media (prefers-color-scheme: dark) {
   body {
-    backdrop-filter: invert(1) hue-rotate(180deg);
     filter: invert(1) hue-rotate(180deg);
   }  
 }
-.coffee {
-  display: block;
-  margin: auto;
+
+#coffee {
+  display: flex;
+  align-items: center;
   width: 30%;
+}
+
+#cup {
+  margin: 0 auto;
+  display: block;
 }
