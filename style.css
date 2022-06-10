@@ -1,6 +1,7 @@
 @media (prefers-color-scheme: dark) {
   body {
-    backdrop-filter: invert(1) hue-rotate(180deg);
+    background-color: black;
+    filter: invert(1) hue-rotate(180deg)
   }  
 }
 
@@ -13,5 +14,4 @@
 #cup {
   margin: 0 auto;
   display: block;
-  filter: invert(1) hue-rotate(180deg)
 }
