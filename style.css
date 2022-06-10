@@ -4,6 +4,7 @@
   }  
 }
 .coffee {
-    filter: invert(1) hue-rotate(180deg);
-    width: 30%;
-  }
+  display: block;
+  margin: auto;
+  width: 30%;
+}
