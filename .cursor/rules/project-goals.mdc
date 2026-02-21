@@ -1,0 +1,18 @@
+---
+description: Project goals — coffee cup page behavior and standards
+alwaysApply: true
+---
+
+# Project goals
+
+This site exists to display:
+
+- **A single SVG** — One scalable vector graphic (coffee cup). No other visual content.
+- **Dark/light mode** — The page must adapt to the viewport/user setting for dark vs light mode (e.g. `prefers-color-scheme`).
+- **Centering** — The image must be centered vertically and horizontally within the viewport.
+- **Viewport-relative scaling** — The image must be a defined percentage of the viewport (e.g. 15–25%) and must scale proportionally when the window is resized (use viewport units such as `vmin` so size tracks resize).
+- **Assistive text** — Descriptive text for the image must be available to assistive devices/features (e.g. `alt` on `<img>`) and must not be visible on screen.
+- **Standards** — Markup and styles must follow the latest standards, validate (e.g. html-validate, stylelint), and remain viewable in current major browsers.
+- **Simplicity** — All elements (HTML, CSS, and anything else) must be simple, minimalist, free of cruft, easy to read, and generally elegant.
+
+When changing HTML or CSS, ensure these goals are still met and that centering/scaling work in real browsers (e.g. test with `<img>` for SVGs if `<object>` does not scale or center reliably).
