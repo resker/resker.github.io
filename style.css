@@ -1,10 +1,24 @@
+body {
+  min-height: 100dvh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
 @media (prefers-color-scheme: dark) {
   body {
     background-color: black;
     filter: invert(1) hue-rotate(180deg);
-  }  
+  }
 }
 
 #firstcup {
   width: 15%;
+}
+
+.sr-only {
+  position: absolute;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
