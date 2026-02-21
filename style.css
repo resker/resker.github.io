@@ -1,8 +1,27 @@
+html {
+  min-height: 100dvh;
+}
+
 body {
   min-height: 100dvh;
   display: flex;
   justify-content: center;
   align-items: center;
+  margin: 0;
+}
+
+main {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+figure {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -18,7 +37,13 @@ body {
 
 .sr-only {
   position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
+  clip: rect(0, 0, 0, 0);
   clip-path: inset(50%);
   white-space: nowrap;
+  border: 0;
 }

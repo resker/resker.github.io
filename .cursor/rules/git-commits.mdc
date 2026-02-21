@@ -1,0 +1,14 @@
+---
+description: Git commit message rules — no co-author or Cursor attribution
+alwaysApply: true
+---
+
+# Git commits
+
+When suggesting or creating git commits:
+
+- **Do not** add "Co-authored-by: Cursor" or any "Co-authored-by" trailer to commit messages.
+- **Do not** add Cursor, AI, or agent attribution in the commit body or footer.
+- Use only the commit subject (and optional body) provided or agreed with the user.
+
+Commit messages should contain only the intended description of the change, with no co-author or tool attribution.
