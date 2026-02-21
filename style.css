@@ -22,6 +22,7 @@ figure {
   flex-direction: column;
   align-items: center;
   margin: 0;
+  padding: 0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -32,7 +33,11 @@ figure {
 }
 
 #firstcup {
-  width: 15%;
+  display: block;
+  width: 15vmin;
+  height: auto;
+  aspect-ratio: 287.97 / 275.67;
+  margin-inline: auto;
 }
 
 .sr-only {
