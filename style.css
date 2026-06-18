@@ -1,3 +1,7 @@
+:root {
+  color-scheme: light dark;
+}
+
 html {
   min-height: 100dvh;
 }
@@ -8,6 +12,8 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
+  background-color: light-dark(white, black);
+  color: light-dark(black, white);
 }
 
 main {
@@ -20,15 +26,8 @@ main img {
   height: auto;
 }
 
-@media (prefers-color-scheme: light) {
-  body {
-    background-color: white;
-  }
-}
-
 @media (prefers-color-scheme: dark) {
   body {
-    background-color: black;
     filter: invert(1) hue-rotate(180deg);
   }
 }
