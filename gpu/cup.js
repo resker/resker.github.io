@@ -57,19 +57,25 @@ struct Out {
   var specAmt = 0.35;
   let material = inst.params.x;
   let r = length(i.localPos.xz);
+  let e = fwidth(i.localPos.y); // derivative must be taken in uniform control flow
   if (material > 0.5 && material < 1.5) {
     // Two dark rings around the outside of the cup, like the artwork.
+    // Anti-aliased with fwidth; 'outside' = normal points away from the axis.
     let y = i.localPos.y;
-    let band = (y > 1.05 && y < 1.085) || (y > 1.13 && y < 1.165);
-    if (r > 0.86 && band) { base = vec3f(0.12, 0.12, 0.13); }
+    let ring1 = smoothstep(1.05 - e, 1.05 + e, y) - smoothstep(1.085 - e, 1.085 + e, y);
+    let ring2 = smoothstep(1.13 - e, 1.13 + e, y) - smoothstep(1.165 - e, 1.165 + e, y);
+    let outside = step(0.0, dot(normalize(i.normal.xz), normalize(i.localPos.xz)));
+    base = mix(base, vec3f(0.12, 0.12, 0.13), clamp(ring1 + ring2, 0.0, 1.0) * outside);
   } else if (material > 1.5) {
-    // Coffee: a crema ring near the wall, faint mottling, wetter highlight.
+    // Coffee: near-uniform dark surface that lightens slightly toward the
+    // wall, with a thin ring of tiny bubbles where it meets the cup.
     let q = i.localPos.xz;
-    let mottle = noise(q * 9.0) * 0.6 + noise(q * 23.0 + 7.0) * 0.4;
-    let crema = vec3f(0.62, 0.44, 0.24);
-    let edge = smoothstep(0.5, 0.84, r + (mottle - 0.5) * 0.18);
-    base = mix(base, crema, edge * 0.85 + (mottle - 0.5) * 0.12);
-    gloss = 24.0; specAmt = 0.5;
+    let crema = vec3f(0.58, 0.4, 0.22);
+    let edgeTint = smoothstep(0.6, 0.85, r) * 0.25;
+    let ringMask = smoothstep(0.7, 0.8, r) * (1.0 - smoothstep(0.82, 0.85, r));
+    let bubbles = smoothstep(0.62, 0.8, noise(q * 70.0)) * 0.7 + smoothstep(0.7, 0.85, noise(q * 130.0 + 3.0)) * 0.5;
+    base = mix(base, crema, edgeTint + ringMask * bubbles);
+    gloss = 20.0; specAmt = 0.45;
   }
   let n = normalize(i.normal);
   let l = normalize(scene.light);
@@ -209,7 +215,7 @@ function cupOuterRadius(y) {
 const saucerProfile = [
   [0.0, -0.09], [0.48, -0.09], [0.52, -0.05], [0.62, -0.05], [1.05, 0.0],
   [1.36, 0.1], [1.42, 0.15], [1.41, 0.18], [1.34, 0.17], [1.05, 0.09],
-  [0.66, 0.05], [0.6, 0.07], [0.56, 0.06], [0.54, 0.02], [0.0, 0.02],
+  [0.82, 0.05], [0.76, 0.08], [0.72, 0.07], [0.7, 0.02], [0.0, 0.02],
 ];
 const coffeeLevel = 1.18;
 const coffeeProfile = [[0.85, coffeeLevel], [0.0, coffeeLevel]]; // right-to-left so the normal faces up
@@ -310,10 +316,10 @@ async function main() {
   setInstance(3, mat.identity(), ceramic);
   // Wisps: base position, tint, [phase, speed, sway, height].
   const wispSpecs = [
-    [[-0.15, 0.1], 1.0, 0.9, 0.22, 1.7],
-    [[0.18, -0.05], 2.7, 0.7, 0.28, 2.0],
-    [[0.02, 0.2], 4.4, 1.1, 0.18, 1.5],
-    [[-0.05, -0.18], 5.9, 0.55, 0.3, 2.2],
+    [[-0.15, 0.1], 1.0, 0.9, 0.22, 1.05],
+    [[0.18, -0.05], 2.7, 0.7, 0.28, 1.25],
+    [[0.02, 0.2], 4.4, 1.1, 0.18, 0.95],
+    [[-0.05, -0.18], 5.9, 0.55, 0.3, 1.35],
   ];
   const setWisps = (dark) => {
     const tint = dark ? [0.9, 0.84, 0.72, 0.4] : [0.7, 0.58, 0.42, 0.2];
@@ -400,7 +406,7 @@ async function main() {
     steamTime += dt * (reducedMotion.matches ? 0 : hover ? 2.2 : 1);
 
     // Camera.
-    const dist = 5.0, target = [0, 0.6, 0];
+    const dist = 5.2, target = [0, 0.8, 0];
     const eye = [target[0] + Math.sin(yaw) * Math.cos(pitch) * dist, target[1] + Math.sin(pitch) * dist, target[2] + Math.cos(yaw) * Math.cos(pitch) * dist];
     const viewProj = mat.multiply(mat.perspective(0.6, size[0] / size[1], 0.1, 50), mat.lookAt(eye, target, [0, 1, 0]));
     // Key light rides with the camera: above and to the viewer's left.
