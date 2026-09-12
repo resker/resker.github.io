@@ -1,0 +1,43 @@
+:root {
+  color-scheme: light dark;
+}
+
+html {
+  min-height: 100dvh;
+}
+
+body {
+  min-height: 100dvh;
+  margin: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: light-dark(white, black);
+  color: light-dark(black, white);
+  font: 1rem/1.5 system-ui, sans-serif;
+}
+
+main {
+  display: flex;
+}
+
+canvas {
+  display: block;
+  width: 70vmin;
+  height: 70vmin;
+  touch-action: none;
+  cursor: grab;
+}
+
+canvas:active {
+  cursor: grabbing;
+}
+
+p {
+  margin: 0 1rem;
+  text-align: center;
+}
+
+a {
+  color: inherit;
+}
