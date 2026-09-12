@@ -25,9 +25,3 @@ main img {
   width: 35vmin;
   height: auto;
 }
-
-@media (prefers-color-scheme: dark) {
-  body {
-    filter: invert(1) hue-rotate(180deg);
-  }
-}
