@@ -5,7 +5,7 @@
 const canvas = document.querySelector('canvas');
 const fallback = document.querySelector('p[hidden]');
 
-const shader = /* wgsl */ `
+const common = /* wgsl */ `
 struct Scene {
   viewProj: mat4x4f,
   eye: vec3f,
@@ -16,11 +16,19 @@ struct Scene {
 struct Instance {
   model: mat4x4f,
   color: vec4f,
-  rings: f32,
+  params: vec4f, // x: material (1 cup rings, 2 coffee); wisps: phase, speed, sway, height
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> instances: array<Instance>;
+`;
 
+const litShader = common + /* wgsl */ `
+// Cheap value noise for the crema.
+fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453); }
+fn noise(p: vec2f) -> f32 {
+  let i = floor(p); let f = fract(p); let u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2f(1, 0)), u.x), mix(hash(i + vec2f(0, 1)), hash(i + vec2f(1, 1)), u.x), u.y);
+}
 struct Out {
   @builtin(position) pos: vec4f,
   @location(0) worldPos: vec3f,
@@ -44,30 +52,79 @@ struct Out {
 
 @fragment fn fs(i: Out) -> @location(0) vec4f {
   let inst = instances[i.id];
-  // Steam is translucent and unlit; fading alpha toward the silhouette
-  // turns each sphere into a soft puff instead of a hard-edged ball.
-  if (inst.color.a < 1.0) {
-    let facing = max(dot(normalize(i.normal), normalize(scene.eye - i.worldPos)), 0.0);
-    return vec4f(inst.color.rgb, inst.color.a * pow(facing, 2.0));
-  }
   var base = inst.color.rgb;
-  // Two dark rings around the outside of the cup, like the artwork.
-  if (inst.rings > 0.5) {
-    let r = length(i.localPos.xz);
+  var gloss = 64.0;
+  var specAmt = 0.35;
+  let material = inst.params.x;
+  let r = length(i.localPos.xz);
+  if (material > 0.5 && material < 1.5) {
+    // Two dark rings around the outside of the cup, like the artwork.
     let y = i.localPos.y;
-    let outside = r > 0.86;
     let band = (y > 1.05 && y < 1.085) || (y > 1.13 && y < 1.165);
-    if (outside && band) { base = vec3f(0.12, 0.12, 0.13); }
+    if (r > 0.86 && band) { base = vec3f(0.12, 0.12, 0.13); }
+  } else if (material > 1.5) {
+    // Coffee: a crema ring near the wall, faint mottling, wetter highlight.
+    let q = i.localPos.xz;
+    let mottle = noise(q * 9.0) * 0.6 + noise(q * 23.0 + 7.0) * 0.4;
+    let crema = vec3f(0.62, 0.44, 0.24);
+    let edge = smoothstep(0.5, 0.84, r + (mottle - 0.5) * 0.18);
+    base = mix(base, crema, edge * 0.85 + (mottle - 0.5) * 0.12);
+    gloss = 24.0; specAmt = 0.5;
   }
   let n = normalize(i.normal);
   let l = normalize(scene.light);
   let v = normalize(scene.eye - i.worldPos);
   let h = normalize(l + v);
   let diff = max(dot(n, l), 0.0);
-  let spec = pow(max(dot(n, h), 0.0), 64.0) * 0.35;
+  let spec = pow(max(dot(n, h), 0.0), gloss) * specAmt;
   let fill = max(dot(n, normalize(vec3f(-0.5, 0.3, -0.7))), 0.0) * 0.25;
   let lit = base * (scene.ambient + diff * 0.65 + fill) + vec3f(spec);
-  return vec4f(lit, inst.color.a);
+  return vec4f(lit, 1.0);
+}`;
+
+// Steam: each wisp is a camera-facing ribbon. The vertex shader bends it with
+// travelling waves so it curls as it rises; alpha fades at both ends and at the
+// ribbon's edges so it reads as vapour rather than a strip.
+const steamShader = common + /* wgsl */ `
+struct Out {
+  @builtin(position) pos: vec4f,
+  @location(0) t: f32,
+  @location(1) side: f32,
+  @location(2) @interpolate(flat) id: u32,
+};
+
+@vertex fn vs(@location(0) a: vec2f, @builtin(instance_index) id: u32) -> Out {
+  let inst = instances[id];
+  let t = a.x;                       // 0 at the coffee, 1 at the top
+  let phase = inst.params.x;
+  let speed = inst.params.y;
+  let sway = inst.params.z;
+  let height = inst.params.w;
+  let time = scene.time * speed;
+  // Curl: two travelling sine waves per axis, growing with height.
+  let grow = 0.25 + t * 1.1;
+  let x = (sin(t * 7.0 - time * 1.9 + phase) * 0.55 + sin(t * 15.0 - time * 3.1 + phase * 2.0) * 0.18) * sway * grow;
+  let z = (cos(t * 6.0 - time * 1.6 + phase * 1.3) * 0.45 + sin(t * 12.0 - time * 2.6) * 0.15) * sway * grow;
+  let base = (inst.model * vec4f(0, 0, 0, 1)).xyz;
+  let centre = base + vec3f(x, t * height, z);
+  // Billboard the width across the camera's right vector.
+  let toEye = normalize(scene.eye - centre);
+  let right = normalize(cross(vec3f(0, 1, 0), toEye));
+  let width = (0.05 + t * 0.16) * (1.0 - t * 0.35);
+  var o: Out;
+  o.pos = scene.viewProj * vec4f(centre + right * a.y * width, 1);
+  o.t = t;
+  o.side = a.y;
+  o.id = id;
+  return o;
+}
+
+@fragment fn fs(i: Out) -> @location(0) vec4f {
+  let inst = instances[i.id];
+  let along = pow(sin(i.t * 3.14159), 1.4) * (1.0 - i.t * 0.3);
+  let across = 1.0 - i.side * i.side;
+  let a = inst.color.a * along * across * across;
+  return vec4f(inst.color.rgb * a, a); // premultiplied
 }`;
 
 // ---- geometry -------------------------------------------------------------
@@ -99,21 +156,23 @@ function lathe(profile, segments = 64) {
   return { pos, nrm, idx };
 }
 
-// Tube swept along an arc in the XY plane (the handle).
-function arcTube(center, radius, tube, from, to, steps = 32, ring = 16) {
+// Tube swept along a polyline in the XY plane (the handle).
+function sweep(path, tube, ring = 16) {
   const pos = [], nrm = [], idx = [];
-  for (let i = 0; i <= steps; i++) {
-    const a = from + (to - from) * (i / steps);
-    const cx = center[0] + Math.cos(a) * radius, cy = center[1] + Math.sin(a) * radius;
-    const rx = Math.cos(a), ry = Math.sin(a); // radial direction in XY
+  for (let i = 0; i < path.length; i++) {
+    const [px, py] = path[i];
+    const [ax, ay] = path[Math.max(i - 1, 0)], [bx, by] = path[Math.min(i + 1, path.length - 1)];
+    let tx = bx - ax, ty = by - ay;
+    const len = Math.hypot(tx, ty) || 1;
+    tx /= len; ty /= len;
+    const nx = -ty, ny = tx; // in-plane normal; binormal is +Z
     for (let j = 0; j <= ring; j++) {
       const b = (j / ring) * Math.PI * 2, cb = Math.cos(b), sb = Math.sin(b);
-      const nx = rx * cb, ny = ry * cb, nz = sb;
-      pos.push(cx + nx * tube, cy + ny * tube, nz * tube);
-      nrm.push(nx, ny, nz);
+      pos.push(px + nx * cb * tube, py + ny * cb * tube, sb * tube);
+      nrm.push(nx * cb, ny * cb, sb);
     }
   }
-  for (let i = 0; i < steps; i++) {
+  for (let i = 0; i < path.length - 1; i++) {
     for (let j = 0; j < ring; j++) {
       const a = i * (ring + 1) + j, b = a + ring + 1;
       idx.push(a, a + 1, b, a + 1, b + 1, b);
@@ -122,26 +181,51 @@ function arcTube(center, radius, tube, from, to, steps = 32, ring = 16) {
   return { pos, nrm, idx };
 }
 
-function sphere(r = 1, seg = 12) {
-  const profile = [];
-  for (let i = 0; i <= seg; i++) {
-    const t = (i / seg) * Math.PI;
-    profile.push([Math.sin(t) * r + 1e-4, -Math.cos(t) * r]);
-  }
-  return lathe(profile, seg * 2);
+// Ribbon for a steam wisp: (t, side) pairs, shaped in the vertex shader.
+function ribbon(steps = 48) {
+  const pos = [], idx = [];
+  for (let i = 0; i <= steps; i++) { pos.push(i / steps, -1, i / steps, 1); }
+  for (let i = 0; i < steps; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  return { pos, idx };
 }
 
+// Cup profile: bottom, up the outside, over the rim, down the inside.
 const cupProfile = [
-  [0.0, 0.02], [0.36, 0.02], [0.5, 0.06], [0.66, 0.2], [0.8, 0.5],
+  [0.0, 0.0], [0.38, 0.0], [0.42, 0.03], [0.5, 0.06], [0.66, 0.2], [0.8, 0.5],
   [0.88, 0.85], [0.92, 1.15], [0.93, 1.34], [0.93, 1.38], [0.87, 1.38],
   [0.86, 1.3], [0.84, 1.05], [0.76, 0.6], [0.6, 0.3], [0.4, 0.2], [0.0, 0.18],
 ];
+const outerWall = cupProfile.slice(1, 9); // (r, y) pairs, y increasing
+function cupOuterRadius(y) {
+  for (let i = 1; i < outerWall.length; i++) {
+    const [r0, y0] = outerWall[i - 1], [r1, y1] = outerWall[i];
+    if (y <= y1) return r0 + (r1 - r0) * ((y - y0) / (y1 - y0));
+  }
+  return outerWall.at(-1)[0];
+}
+
+// Saucer: foot ring underneath, central well with a ridge that seats the cup,
+// a gently rising dish, and a rolled rim. About 1.5x the cup's rim.
 const saucerProfile = [
-  [0.0, -0.08], [0.55, -0.08], [0.6, -0.04], [1.3, 0.0], [1.7, 0.08],
-  [1.82, 0.14], [1.8, 0.17], [1.66, 0.14], [1.25, 0.06], [0.62, 0.02], [0.0, 0.02],
+  [0.0, -0.09], [0.48, -0.09], [0.52, -0.05], [0.62, -0.05], [1.05, 0.0],
+  [1.36, 0.1], [1.42, 0.15], [1.41, 0.18], [1.34, 0.17], [1.05, 0.09],
+  [0.66, 0.05], [0.6, 0.07], [0.56, 0.06], [0.54, 0.02], [0.0, 0.02],
 ];
 const coffeeLevel = 1.18;
 const coffeeProfile = [[0.85, coffeeLevel], [0.0, coffeeLevel]]; // right-to-left so the normal faces up
+
+// Handle: a D-shaped arc whose ends turn in and stop inside the wall.
+function handlePath() {
+  const cx = 1.02, cy = 0.78, R = 0.3, path = [];
+  const top = 1.06, bottom = 0.5, inset = 0.045;
+  path.push([cupOuterRadius(top) - inset, top], [cx - 0.05, top + 0.02]);
+  for (let i = 0; i <= 24; i++) {
+    const a = Math.PI * 0.55 - (Math.PI * 1.1) * (i / 24);
+    path.push([cx + Math.cos(a) * R, cy + Math.sin(a) * R]);
+  }
+  path.push([cx - 0.05, bottom - 0.01], [cupOuterRadius(bottom) - inset, bottom]);
+  return path;
+}
 
 // ---- tiny matrix helpers (column-major, like WGSL) ------------------------
 
@@ -155,7 +239,6 @@ const mat = {
     return o;
   },
   translate(x, y, z) { const m = mat.identity(); m[12] = x; m[13] = y; m[14] = z; return m; },
-  scale(s) { const m = mat.identity(); m[0] = m[5] = m[10] = s; return m; },
   perspective(fov, aspect, near, far) {
     const f = 1 / Math.tan(fov / 2), m = new Float32Array(16);
     m[0] = f / aspect; m[5] = f; m[10] = far / (near - far); m[11] = -1;
@@ -186,47 +269,62 @@ async function main() {
   const format = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({ device, format, alphaMode: 'premultiplied' });
 
-  const meshes = {
-    cup: lathe(cupProfile),
-    saucer: lathe(saucerProfile),
-    coffee: lathe(coffeeProfile, 48),
-    handle: arcTube([1.05, 0.85], 0.36, 0.075, -Math.PI * 0.7, Math.PI * 0.7),
-    wisp: sphere(1, 12),
-  };
-  for (const m of Object.values(meshes)) {
-    const v = new Float32Array(m.pos.length * 2);
-    for (let i = 0, j = 0; i < m.pos.length; i += 3, j += 6) {
-      v.set(m.pos.slice(i, i + 3), j); v.set(m.nrm.slice(i, i + 3), j + 3);
-    }
+  const upload = (m, floats) => {
+    const v = new Float32Array(floats);
     m.vbuf = device.createBuffer({ size: v.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(m.vbuf, 0, v);
     const ix = new Uint32Array(m.idx);
     m.ibuf = device.createBuffer({ size: ix.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(m.ibuf, 0, ix);
     m.count = ix.length;
+    return m;
+  };
+  const meshes = {
+    cup: lathe(cupProfile),
+    saucer: lathe(saucerProfile),
+    coffee: lathe(coffeeProfile, 48),
+    handle: sweep(handlePath(), 0.055),
+  };
+  for (const m of Object.values(meshes)) {
+    const v = [];
+    for (let i = 0; i < m.pos.length; i += 3) v.push(...m.pos.slice(i, i + 3), ...m.nrm.slice(i, i + 3));
+    upload(m, v);
   }
+  const wispMesh = ribbon();
+  const wisp = upload(wispMesh, wispMesh.pos);
 
-  // Instance table: 0 cup, 1 saucer, 2 coffee, 3 handle, 4.. steam spheres.
-  const WISPS = 3, PER_WISP = 24, STEAM_START = 4;
-  const instanceCount = STEAM_START + WISPS * PER_WISP;
-  const INST_FLOATS = 24; // mat4 (16) + color (4) + rings (1) + pad (3)
-  const instData = new Float32Array(instanceCount * INST_FLOATS);
+  // Instance table: 0 cup, 1 saucer, 2 coffee, 3 handle, then the wisps.
+  const WISPS = 4, STEAM_START = 4;
+  const INST_FLOATS = 24; // mat4 (16) + color (4) + params (4)
+  const instData = new Float32Array((STEAM_START + WISPS) * INST_FLOATS);
   const instBuf = device.createBuffer({ size: instData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const setInstance = (i, model, color, rings = 0) => {
+  const setInstance = (i, model, color, params = [0, 0, 0, 0]) => {
     instData.set(model, i * INST_FLOATS);
     instData.set(color, i * INST_FLOATS + 16);
-    instData[i * INST_FLOATS + 20] = rings;
+    instData.set(params, i * INST_FLOATS + 20);
   };
   const ceramic = [0.93, 0.93, 0.94, 1];
-  setInstance(0, mat.identity(), ceramic, 1);
-  setInstance(1, mat.identity(), [0.86, 0.86, 0.87, 1]);
-  setInstance(2, mat.identity(), [0.27, 0.15, 0.06, 1]);
+  setInstance(0, mat.identity(), ceramic, [1, 0, 0, 0]);
+  setInstance(1, mat.identity(), [0.88, 0.88, 0.89, 1]);
+  setInstance(2, mat.identity(), [0.24, 0.13, 0.05, 1], [2, 0, 0, 0]);
   setInstance(3, mat.identity(), ceramic);
+  // Wisps: base position, tint, [phase, speed, sway, height].
+  const wispSpecs = [
+    [[-0.15, 0.1], 1.0, 0.9, 0.22, 1.7],
+    [[0.18, -0.05], 2.7, 0.7, 0.28, 2.0],
+    [[0.02, 0.2], 4.4, 1.1, 0.18, 1.5],
+    [[-0.05, -0.18], 5.9, 0.55, 0.3, 2.2],
+  ];
+  const setWisps = (dark) => {
+    const tint = dark ? [0.9, 0.84, 0.72, 0.4] : [0.7, 0.58, 0.42, 0.2];
+    wispSpecs.forEach(([[x, z], phase, speed, sway, height], w) => {
+      setInstance(STEAM_START + w, mat.translate(x, coffeeLevel + 0.02, z), tint, [phase, speed, sway, height]);
+    });
+  };
 
   const sceneData = new Float32Array(16 + 4 + 4);
   const sceneBuf = device.createBuffer({ size: sceneData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-  const module = device.createShaderModule({ code: shader });
   const layout = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
     { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
@@ -235,27 +333,39 @@ async function main() {
     { binding: 0, resource: { buffer: sceneBuf } },
     { binding: 1, resource: { buffer: instBuf } },
   ] });
-  const makePipeline = (blend) => device.createRenderPipeline({
-    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-    vertex: { module, entryPoint: 'vs', buffers: [{ arrayStride: 24, attributes: [
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const litModule = device.createShaderModule({ code: litShader });
+  const opaque = device.createRenderPipeline({
+    layout: pipelineLayout,
+    vertex: { module: litModule, entryPoint: 'vs', buffers: [{ arrayStride: 24, attributes: [
       { shaderLocation: 0, offset: 0, format: 'float32x3' },
       { shaderLocation: 1, offset: 12, format: 'float32x3' },
     ] }] },
-    fragment: { module, entryPoint: 'fs', targets: [{ format, blend: blend ? {
-      color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
-      alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
-    } : undefined }] },
+    fragment: { module: litModule, entryPoint: 'fs', targets: [{ format }] },
     primitive: { cullMode: 'none' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: !blend, depthCompare: 'less' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
     multisample: { count: 4 },
   });
-  const opaque = makePipeline(false), translucent = makePipeline(true);
+  const steamModule = device.createShaderModule({ code: steamShader });
+  const translucent = device.createRenderPipeline({
+    layout: pipelineLayout,
+    vertex: { module: steamModule, entryPoint: 'vs', buffers: [{ arrayStride: 8, attributes: [
+      { shaderLocation: 0, offset: 0, format: 'float32x2' },
+    ] }] },
+    fragment: { module: steamModule, entryPoint: 'fs', targets: [{ format, blend: {
+      color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+      alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+    } }] },
+    primitive: { cullMode: 'none' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less' },
+    multisample: { count: 4 },
+  });
 
   // ---- state ----------------------------------------------------------------
 
   const dark = matchMedia('(prefers-color-scheme: dark)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  let yaw = 0.6, pitch = 0.42, dragging = null, hover = false, steamPhase = 0;
+  let yaw = 0.6, pitch = 0.42, dragging = null, hover = false, steamTime = 0;
 
   canvas.addEventListener('pointerdown', (e) => { dragging = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener('pointermove', (e) => {
@@ -287,34 +397,20 @@ async function main() {
     if (!color) { requestAnimationFrame(frame); return; }
 
     if (!dragging && !reducedMotion.matches) yaw += dt * 0.25;
-    steamPhase += dt * (reducedMotion.matches ? 0 : hover ? 2.2 : 1);
+    steamTime += dt * (reducedMotion.matches ? 0 : hover ? 2.2 : 1);
 
     // Camera.
-    const dist = 5.2, target = [0, 0.55, 0];
+    const dist = 5.0, target = [0, 0.6, 0];
     const eye = [target[0] + Math.sin(yaw) * Math.cos(pitch) * dist, target[1] + Math.sin(pitch) * dist, target[2] + Math.cos(yaw) * Math.cos(pitch) * dist];
     const viewProj = mat.multiply(mat.perspective(0.6, size[0] / size[1], 0.1, 50), mat.lookAt(eye, target, [0, 1, 0]));
-    sceneData.set(viewProj, 0);
     // Key light rides with the camera: above and to the viewer's left.
     const fwd = norm(sub(target, eye)), right = norm(cross(fwd, [0, 1, 0]));
     const light = norm([-fwd[0] - right[0] * 0.7, 1.1, -fwd[2] - right[2] * 0.7]);
+    sceneData.set(viewProj, 0);
     sceneData.set(eye, 16); sceneData[19] = dark.matches ? 0.25 : 0.5;
-    sceneData.set(light, 20); sceneData[23] = now / 1000;
+    sceneData.set(light, 20); sceneData[23] = steamTime;
     device.queue.writeBuffer(sceneBuf, 0, sceneData);
-
-    // Steam: three wisps, each a column of spheres drifting up on a sine path.
-    for (let w = 0; w < WISPS; w++) {
-      const period = w === 2 ? 15 : 7, offset = w * 2.4;
-      for (let k = 0; k < PER_WISP; k++) {
-        const t = ((steamPhase + offset + k * (period / PER_WISP)) % period) / period; // 0..1 lifetime
-        const y = coffeeLevel + 0.05 + t * 2.0;
-        const x = Math.sin(t * 9 + w * 2.1) * (0.08 + t * 0.3) + (w - 1) * 0.18;
-        const z = Math.cos(t * 7 + w) * (0.06 + t * 0.2);
-        const fade = Math.sin(t * Math.PI) ** 2;
-        const r = 0.05 + t * 0.13;
-        const m = mat.multiply(mat.translate(x, y, z), mat.scale(r));
-        setInstance(STEAM_START + w * PER_WISP + k, m, [0.92, 0.7, 0.3, 0.16 * fade]);
-      }
-    }
+    setWisps(dark.matches);
     device.queue.writeBuffer(instBuf, 0, instData);
 
     const bg = dark.matches ? [0, 0, 0, 1] : [1, 1, 1, 1];
@@ -328,7 +424,7 @@ async function main() {
     const draw = (m, first, n = 1) => { pass.setVertexBuffer(0, m.vbuf); pass.setIndexBuffer(m.ibuf, 'uint32'); pass.drawIndexed(m.count, n, 0, 0, first); };
     draw(meshes.cup, 0); draw(meshes.saucer, 1); draw(meshes.coffee, 2); draw(meshes.handle, 3);
     pass.setPipeline(translucent);
-    draw(meshes.wisp, STEAM_START, WISPS * PER_WISP);
+    draw(wisp, STEAM_START, WISPS);
     pass.end();
     device.queue.submit([enc.finish()]);
     requestAnimationFrame(frame);
