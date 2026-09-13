@@ -81,32 +81,34 @@ struct Out {
     let outside = step(0.0, dot(normalize(i.normal.xz), normalize(i.localPos.xz)));
     base = mix(base, vec3f(0.12, 0.12, 0.13), clamp(ring1 + ring2, 0.0, 1.0) * outside);
   } else if (material > 1.5) {
-    // Coffee. The surface is dark and glossy. Foam is a thin continuous band
-    // against the wall plus a patch or two bulging in from it; inside, it is
-    // densely packed tiny cells, matte and cream-coloured.
+    // Crema: a thin layer of micro-foam covering the whole surface, as on an
+    // americano. Hazelnut-to-amber gradients follow organic, swirled shapes;
+    // fine packed cells give the foam its structure; darker flecks and a
+    // slightly thicker, lighter rim at the wall; a soft oily sheen.
     let q = i.localPos.xz;
-    let angle = atan2(q.y, q.x);
     let wall = 0.85;
-    // Coverage: a band whose width wanders around the rim, and patches.
-    let bandW = 0.02 + noise(vec2f(angle * 3.0, 2.3)) * 0.05;
-    let band = smoothstep(wall - bandW - 0.01, wall - bandW + 0.01, r);
-    let blob = noise(q * 2.6 + 5.0) + (noise(q * 24.0) - 0.5) * 0.12;
-    let blobs = smoothstep(0.69, 0.73, blob) * smoothstep(0.5, 0.72, r);
-    let foam = clamp(band + blobs, 0.0, 1.0);
-    // Texture inside the foam: cell centres lighter, walls darker, a few
-    // pinpoint highlights where a bubble catches the light.
-    let d = cells(q * 130.0);
-    let d2 = cells(q * 55.0 + 3.0);
-    let cellTone = 0.7 + 0.3 * (1.0 - smoothstep(0.15, 0.6, d)) - 0.15 * smoothstep(0.35, 0.55, d2);
-    let glint = (1.0 - smoothstep(0.0, 0.12, d)) * 0.35;
-    // Thicker foam (patch centres, right at the wall) reads lighter.
-    let thick = 0.85 + 0.25 * max(smoothstep(0.7, 0.85, blob), smoothstep(wall - 0.03, wall, r));
-    let cream = vec3f(0.74, 0.58, 0.38) * cellTone * thick + vec3f(glint);
-    // Thin light film near the wall under the foam, then the foam itself.
-    base = mix(base, base * 1.6, smoothstep(0.7, wall, r) * 0.3);
-    base = mix(base, cream, foam);
-    // Coffee is glossy; foam is matte.
-    gloss = mix(20.0, 6.0, foam); specAmt = mix(0.45, 0.06, foam);
+    let hazelnut = vec3f(0.6, 0.38, 0.19);
+    let amber = vec3f(0.36, 0.19, 0.07);
+    // Organic gradients: domain-warped noise so the shapes swirl, not blob.
+    let warp = vec2f(noise(q * 3.0 + 7.0), noise(q * 3.0 + 19.0)) - 0.5;
+    // Stretch one axis so the shapes streak rather than blob.
+    let qs = vec2f(q.x * 1.0, q.y * 2.4) + warp * 2.2;
+    let swirl = noise(qs * 3.0) * 0.55 + noise(qs * 7.0 + 3.0) * 0.3 + noise(q * 14.0 + warp * 4.0) * 0.15;
+    var crema = mix(amber, hazelnut, smoothstep(0.32, 0.7, swirl) * 0.8 + 0.1);
+    // Micro-foam: fine high-contrast cells, plus a sparser layer of larger ones.
+    let d = cells(q * 170.0);
+    let d2 = cells(q * 60.0 + 3.0);
+    let cellTone = 0.9 + 0.28 * (1.0 - smoothstep(0.12, 0.5, d)) - 0.22 * smoothstep(0.45, 0.72, d)
+                 + 0.1 * (1.0 - smoothstep(0.15, 0.45, d2));
+    crema *= cellTone;
+    // Tiger flecks: darker specks where the foam is thin.
+    let fleck = smoothstep(0.76, 0.86, noise(q * 55.0 + warp * 5.0)) * 0.5 + smoothstep(0.8, 0.9, noise(q * 110.0 + 11.0)) * 0.5;
+    crema = mix(crema, amber * 0.65, fleck * 0.55);
+    // Thicker foam collects at the wall and reads lighter.
+    crema = mix(crema, hazelnut * 1.15, smoothstep(0.74, wall, r) * 0.5);
+    base = crema;
+    // Oily sheen: broad, soft highlight rather than a hard wet one.
+    gloss = 14.0; specAmt = 0.18;
   }
   let n = normalize(i.normal);
   let l = normalize(scene.light);
