@@ -30,27 +30,15 @@ fn noise(p: vec2f) -> f32 {
   return mix(mix(hash(i), hash(i + vec2f(1, 0)), u.x), mix(hash(i + vec2f(0, 1)), hash(i + vec2f(1, 1)), u.x), u.y);
 }
 fn hash2(p: vec2f) -> vec2f { return vec2f(hash(p), hash(p + vec2f(19.3, 7.7))); }
-// Cellular bubble field. Returns (coverage, shade) where shade runs from -1
-// on the bubble's dark rim to +1 at the highlight.
-fn bubbles(p: vec2f, scale: f32, density: f32, seed: f32) -> vec2f {
-  let q = p * scale + seed;
-  let cell = floor(q);
-  let f = fract(q);
-  var best = vec2f(0.0, 0.0);
+// Distance to the nearest of a jittered grid of points: packed-cell texture.
+fn cells(p: vec2f) -> f32 {
+  let cell = floor(p);
+  let f = fract(p);
+  var best = 2.0;
   for (var y = -1; y <= 1; y++) {
     for (var x = -1; x <= 1; x++) {
       let n = vec2f(f32(x), f32(y));
-      let id = cell + n;
-      if (hash(id + 3.1) > density) { continue; }
-      let centre = n + hash2(id) * 0.8 + 0.1;
-      let rad = 0.16 + hash(id + 5.3) * 0.26;
-      let d = f - centre;
-      let dist = length(d);
-      let cover = smoothstep(rad, rad * 0.72, dist);
-      if (cover > best.x) {
-        let shade = dot(d / rad, normalize(vec2f(-0.6, 0.8)));
-        best = vec2f(cover, shade);
-      }
+      best = min(best, length(n + hash2(cell + n) - f));
     }
   }
   return best;
@@ -93,31 +81,32 @@ struct Out {
     let outside = step(0.0, dot(normalize(i.normal.xz), normalize(i.localPos.xz)));
     base = mix(base, vec3f(0.12, 0.12, 0.13), clamp(ring1 + ring2, 0.0, 1.0) * outside);
   } else if (material > 1.5) {
-    // Coffee. Crema on black coffee is a ring of clustered bubbles at the
-    // wall with a few strays, over a faint swirled film. Bubbles come from a
-    // cellular field in two sizes; each is shaded like a tiny lens.
+    // Coffee. The surface is dark and glossy. Foam is a thin continuous band
+    // against the wall plus a patch or two bulging in from it; inside, it is
+    // densely packed tiny cells, matte and cream-coloured.
     let q = i.localPos.xz;
     let angle = atan2(q.y, q.x);
-    let tan_ = vec3f(0.7, 0.52, 0.3);
-    // Thin film with soft swirls; barely there.
-    let film = smoothstep(0.35, 0.8, noise(q * 5.0 + noise(q * 11.0 + 3.0) * 0.9)) * 0.06;
-    base = mix(base, tan_, film + smoothstep(0.7, 0.85, r) * 0.1);
-    // Bubble density: strong in a ring at the wall whose inner edge wanders,
-    // low but non-zero elsewhere so a few strays float in the middle.
-    let inner = 0.71 + (noise(vec2f(angle * 2.5, 1.7)) - 0.5) * 0.1;
-    let patchy = 0.35 + 0.65 * noise(vec2f(angle * 5.0, r * 12.0));
-    let ring = smoothstep(inner, inner + 0.05, r) * patchy;
-    let cluster = smoothstep(0.72, 0.88, noise(q * 3.2 + 9.0)) * (1.0 - ring);
-    let density = ring * 0.95 + cluster * 0.7;
-    let big = bubbles(q, 15.0, density * 0.6, 11.0);
-    let small = bubbles(q, 38.0, density, 29.0);
-    var bub = big;
-    if (small.x > big.x) { bub = small; }
-    // Lens shading: darker toward the rim, a bright highlight on the lit side.
-    let lensLight = mix(tan_ * 0.75, tan_ * 1.35, bub.y * 0.5 + 0.5);
-    let highlight = smoothstep(0.55, 0.9, bub.y) * 0.45;
-    base = mix(base, lensLight + vec3f(highlight), bub.x);
-    gloss = 20.0; specAmt = 0.45;
+    let wall = 0.85;
+    // Coverage: a band whose width wanders around the rim, and patches.
+    let bandW = 0.02 + noise(vec2f(angle * 3.0, 2.3)) * 0.05;
+    let band = smoothstep(wall - bandW - 0.01, wall - bandW + 0.01, r);
+    let blob = noise(q * 2.6 + 5.0) + (noise(q * 24.0) - 0.5) * 0.12;
+    let blobs = smoothstep(0.69, 0.73, blob) * smoothstep(0.5, 0.72, r);
+    let foam = clamp(band + blobs, 0.0, 1.0);
+    // Texture inside the foam: cell centres lighter, walls darker, a few
+    // pinpoint highlights where a bubble catches the light.
+    let d = cells(q * 130.0);
+    let d2 = cells(q * 55.0 + 3.0);
+    let cellTone = 0.7 + 0.3 * (1.0 - smoothstep(0.15, 0.6, d)) - 0.15 * smoothstep(0.35, 0.55, d2);
+    let glint = (1.0 - smoothstep(0.0, 0.12, d)) * 0.35;
+    // Thicker foam (patch centres, right at the wall) reads lighter.
+    let thick = 0.85 + 0.25 * max(smoothstep(0.7, 0.85, blob), smoothstep(wall - 0.03, wall, r));
+    let cream = vec3f(0.74, 0.58, 0.38) * cellTone * thick + vec3f(glint);
+    // Thin light film near the wall under the foam, then the foam itself.
+    base = mix(base, base * 1.6, smoothstep(0.7, wall, r) * 0.3);
+    base = mix(base, cream, foam);
+    // Coffee is glossy; foam is matte.
+    gloss = mix(20.0, 6.0, foam); specAmt = mix(0.45, 0.06, foam);
   }
   let n = normalize(i.normal);
   let l = normalize(scene.light);
