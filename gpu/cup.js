@@ -157,8 +157,8 @@ fn density(p: vec3f) -> f32 {
   let time = scene.time;
   // Plume envelope: a soft column whose axis wanders and leans with height,
   // widening as it rises; density fades in above the surface and decays.
-  let axis = vec2f(sin(time * 0.13) * 0.12 + hn * sin(time * 0.21) * 0.35,
-                   cos(time * 0.11) * 0.12 + hn * cos(time * 0.17) * 0.3);
+  let axis = vec2f(sin(time * 0.08) * 0.12 + hn * sin(time * 0.13) * 0.35,
+                   cos(time * 0.07) * 0.12 + hn * cos(time * 0.11) * 0.3);
   let d = length(p.xz - axis);
   let rad = 0.18 + hn * 0.42;
   let env = exp(-(d * d) / (rad * rad) * 2.2) * smoothstep(0.0, 0.05, hn) * exp(-2.4 * hn) * (1.0 - smoothstep(0.45, 0.85, hn));
@@ -166,11 +166,11 @@ fn density(p: vec3f) -> f32 {
   // Structure: ridged noise in coordinates that rise with time, domain-warped
   // by slower noise so the sheets fold; the warp grows with height as the
   // plume goes from laminar to turbulent.
-  let q = vec3f(p.x, p.y - time * 0.4, p.z) * 2.2;
-  let warp = vec3f(noise3(q * 0.5 + time * 0.12), noise3(q * 0.5 + 9.0), noise3(q * 0.5 + 17.0 - time * 0.1)) - 0.5;
+  let q = vec3f(p.x, p.y - time * 0.24, p.z) * 2.2;
+  let warp = vec3f(noise3(q * 0.5 + time * 0.07), noise3(q * 0.5 + 9.0), noise3(q * 0.5 + 17.0 - time * 0.06)) - 0.5;
   let qq = q + warp * (1.0 + hn * 2.8);
   let f = ridged(qq);
-  return env * smoothstep(0.55, 0.95, f) * 3.2;
+  return env * smoothstep(0.58, 0.95, f) * 2.4;
 }
 
 struct Out {
@@ -197,19 +197,39 @@ struct Out {
   let tn = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
   let tf = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
   if (tf <= max(tn, 0.0)) { discard; }
-  let steps = 40.0;
+  // The cup wall hides anything below the rim unless the ray comes in
+  // through the opening: find where the ray crosses rim height.
+  let RIM = 1.38;
+  let tRim = (RIM - ro.y) / rd.y;
+  let atRim = ro + rd * tRim;
+  let throughOpening = tRim > 0.0 && length(atRim.xz) < 0.86;
+  // Key light for self-shadowing; a backlight behind the plume for the
+  // bright, forward-scattered edges of backlit vapour.
+  let L = normalize(scene.light);
+  let back = normalize(vec3f(-rd.x, 0.35, -rd.z));
+  let cosBack = dot(rd, back);
+  let g = 0.55;
+  let hg = (1.0 - g * g) / (4.0 * 3.14159 * pow(1.0 + g * g - 2.0 * g * cosBack, 1.5));
+  let steps = 36.0;
   let ds = (tf - max(tn, 0.0)) / steps;
   // Jitter the start per pixel to trade banding for fine grain.
   var t = max(tn, 0.0) + ds * fract(sin(dot(i.pos.xy, vec2f(12.9898, 78.233))) * 43758.5453);
   var trans = 1.0;
   var lum = 0.0;
-  for (var k = 0; k < 40; k++) {
+  for (var k = 0; k < 36; k++) {
     let p = ro + rd * t;
-    let dens = density(p);
+    var dens = density(p);
+    if (p.y < RIM && !throughOpening) { dens = 0.0; }
     if (dens > 0.002) {
       let a = 1.0 - exp(-dens * ds * 5.0);
-      // Slightly brighter where the vapour is thinner: light gets through.
-      let shade = 0.65 + 0.35 * (1.0 - min(dens, 1.0));
+      // Self-shadowing: a short march toward the key light.
+      var occ = 0.0;
+      for (var j = 1; j <= 3; j++) { occ += density(p + L * (0.12 * f32(j))); }
+      let shadow = exp(-occ * 0.55);
+      // Ambient sky-ish fill + shadowed key + forward-scattered backlight,
+      // which brightens the thin edges most.
+      let thin = 1.0 - min(dens * 0.6, 1.0);
+      let shade = 0.35 + 0.5 * shadow + hg * 2.2 * thin;
       lum += trans * a * shade;
       trans *= 1.0 - a;
       if (trans < 0.03) { break; }
@@ -312,12 +332,19 @@ function spline(points, per = 8) {
 // back down. The rim is left sharp by splining the two halves separately.
 const outerWall = spline([
   [0.38, 0.0], [0.46, 0.03], [0.58, 0.13], [0.72, 0.36], [0.84, 0.7],
-  [0.905, 1.02], [0.93, 1.3], [0.93, 1.38],
+  [0.905, 1.02], [0.93, 1.3], [0.93, 1.355],
 ]);
+// Rounded lip: a semicircle from the outer wall over to the inner wall, as
+// glaze rounds a real rim.
+const lip = [];
+for (let i = 0; i <= 10; i++) {
+  const a = (i / 10) * Math.PI;
+  lip.push([0.9 + Math.cos(a) * 0.03, 1.355 + Math.sin(a) * 0.03]);
+}
 const innerWall = spline([
-  [0.87, 1.38], [0.86, 1.28], [0.82, 0.95], [0.74, 0.62], [0.6, 0.36], [0.38, 0.22], [0.0, 0.2],
+  [0.87, 1.355], [0.862, 1.28], [0.82, 0.95], [0.74, 0.62], [0.6, 0.36], [0.38, 0.22], [0.0, 0.2],
 ]);
-const cupProfile = [[0.0, 0.0], ...outerWall, ...innerWall];
+const cupProfile = [[0.0, 0.0], ...outerWall, ...lip.slice(1, -1), ...innerWall];
 function cupOuterRadius(y) {
   for (let i = 1; i < outerWall.length; i++) {
     const [r0, y0] = outerWall[i - 1], [r1, y1] = outerWall[i];
@@ -337,18 +364,24 @@ function cupOuterNormal(x, y, z) {
 
 // Saucer: foot ring underneath, central well with a ridge that seats the cup,
 // a gently rising dish, and a rolled rim. About 1.5x the cup's rim.
-const saucerProfile = [
-  [0.0, -0.09], [0.48, -0.09], [0.52, -0.05], [0.62, -0.05], [1.05, 0.0],
-  [1.36, 0.1], [1.42, 0.15], [1.41, 0.18], [1.34, 0.17], [1.05, 0.09],
-  [0.82, 0.05], [0.76, 0.08], [0.72, 0.07], [0.7, 0.02], [0.0, 0.02],
-];
+// Underside: a shallow recess in the centre, a foot ring, then a smooth
+// curve up to the rim. Top: rolled rim, dish curving down, the seating well
+// with its ridge. Splined in two halves so the rim stays crisp.
+const saucerUnder = spline([
+  [0.0, -0.05], [0.3, -0.05], [0.42, -0.07], [0.5, -0.1], [0.58, -0.09], [0.66, -0.05],
+  [0.9, -0.02], [1.15, 0.03], [1.36, 0.11], [1.42, 0.16],
+]);
+const saucerTop = spline([
+  [1.41, 0.19], [1.34, 0.18], [1.12, 0.11], [0.88, 0.06], [0.78, 0.07], [0.72, 0.08], [0.69, 0.04], [0.6, 0.02], [0.0, 0.02],
+]);
+const saucerProfile = [...saucerUnder, ...saucerTop];
 const coffeeLevel = 1.18;
 const coffeeProfile = [[0.85, coffeeLevel], [0.0, coffeeLevel]]; // right-to-left so the normal faces up
 
 // Handle: one smooth cubic Bezier that leaves the wall just below the rings,
 // loops outward, and re-enters at mid-cup. Both ends sit inside the wall.
 function handlePath() {
-  const top = 0.98, bottom = 0.5, inset = 0.07;
+  const top = 0.98, bottom = 0.5, inset = 0.1;
   const p0 = [cupOuterRadius(top) - inset, top], p3 = [cupOuterRadius(bottom) - inset, bottom];
   // Leaves the wall rising a little, arcs over, and comes down to the
   // lower attachment; the upper root is near the handle's highest point.
@@ -442,10 +475,11 @@ async function main() {
     // Radius flares toward each end and blends into a short fillet where it
     // meets the body, as a luted, glazed handle does.
     handle: blendRoots(sweep(handlePath(), (t) => {
+      // A modest flare only: a convex 'fillet' bump reads as a lump on the
+      // wall from inside the loop, so the blend is left to the normals.
       const end = Math.min(t, 1 - t) / 0.14; // 0 at the wall, 1 a little way out
-      const flare = 1 + 0.3 * Math.pow(1 - Math.min(end, 1), 2);
-      const fillet = end < 0.18 ? 1 + 0.35 * Math.pow(1 - end / 0.18, 2) : 1;
-      return 0.085 * flare * fillet;
+      const flare = 1 + 0.25 * Math.pow(1 - Math.min(end, 1), 2);
+      return 0.085 * flare;
     })),
   };
   for (const m of Object.values(meshes)) {
@@ -566,7 +600,7 @@ async function main() {
     sceneData.set(light, 20); sceneData[23] = steamTime;
     // Steam is condensed water, seen by scattering: whitish on a dark page,
     // a soft grey on a light one.
-    sceneData.set(dark.matches ? [0.95, 0.93, 0.9, 0.6] : [0.5, 0.47, 0.44, 0.4], 24);
+    sceneData.set(dark.matches ? [0.95, 0.93, 0.9, 0.42] : [0.74, 0.77, 0.82, 0.3], 24);
     device.queue.writeBuffer(sceneBuf, 0, sceneData);
 
     const bg = dark.matches ? [0, 0, 0, 1] : [1, 1, 1, 1];
