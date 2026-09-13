@@ -304,12 +304,13 @@ struct Out {
   // The cup hides everything beyond the point where the ray meets its wall
   // below the rim: from below, that is the near wall; from above, the ray
   // enters through the opening and is stopped by the far wall.
-  let RIM = 1.385;
+  // Slightly larger than the cup so grazing rays at the lip are caught too.
+  let RIM = 1.4;
   var tBlock = 1e9;
   {
     let qa = rd.x * rd.x + rd.z * rd.z;
     let qb = 2.0 * (ro.x * rd.x + ro.z * rd.z);
-    let qc = ro.x * ro.x + ro.z * ro.z - 0.93 * 0.93;
+    let qc = ro.x * ro.x + ro.z * ro.z - 0.95 * 0.95;
     let disc = qb * qb - 4.0 * qa * qc;
     if (disc > 0.0 && qa > 1e-6) {
       let sq = sqrt(disc);
@@ -359,6 +360,9 @@ struct Out {
   }
   // Coverage follows the lit brightness, so only the bright sheets show;
   // thick, shadowed vapour does not turn into a grey cloud on a light page.
+  // Keep the steam under the bloom threshold: its glow must not smear
+  // across the rim into the foreground.
+  lum = min(lum, 1.0);
   let alpha = (1.0 - trans) * scene.steam.w * clamp(lum * 1.4, 0.0, 1.0);
   let tint = scene.steam.xyz * (0.6 + 0.4 * scene.envScale);
   return vec4f(tint * lum * scene.steam.w, alpha); // premultiplied
