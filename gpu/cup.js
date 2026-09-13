@@ -190,11 +190,10 @@ struct Out {
     // Glazed ceramic. A very subtle orange-peel undulation in the glaze and
     // a faint variation in the body colour; nothing you'd notice directly.
     let p = i.localPos * 22.0;
-    let eps = 0.03;
-    let g = vec3f(noise3(p + vec3f(eps, 0, 0)) - noise3(p - vec3f(eps, 0, 0)),
-                  noise3(p + vec3f(0, eps, 0)) - noise3(p - vec3f(0, eps, 0)),
-                  noise3(p + vec3f(0, 0, eps)) - noise3(p - vec3f(0, 0, eps)));
-    n = normalize(n + (g - n * dot(g, n)) * 0.12);
+    let eps = 0.05;
+    let n0 = noise3(p);
+    let g = vec3f(noise3(p + vec3f(eps, 0, 0)) - n0, noise3(p + vec3f(0, eps, 0)) - n0, noise3(p + vec3f(0, 0, eps)) - n0);
+    n = normalize(n + (g - n * dot(g, n)) * 0.14);
     base *= 0.985 + 0.03 * noise3(i.localPos * 5.0 + 3.0);
     if (material < 1.5) {
       // Two dark rings around the outside of the cup, like the artwork.
@@ -332,13 +331,13 @@ struct Out {
   // Looking straight down the plume integrates its whole height; the real
   // thing is thin sheets, not a solid column, so thin it for vertical views.
   let viewThin = 1.0 - 0.7 * rd.y * rd.y;
-  let steps = 36.0;
+  let steps = 28.0;
   let ds = (tf - max(tn, 0.0)) / steps;
   // Jitter the start per pixel to trade banding for fine grain.
   var t = max(tn, 0.0) + ds * fract(sin(dot(i.pos.xy, vec2f(12.9898, 78.233))) * 43758.5453);
   var trans = 1.0;
   var lum = 0.0;
-  for (var k = 0; k < 36; k++) {
+  for (var k = 0; k < 28; k++) {
     if (t > tBlock) { break; }
     let p = ro + rd * t;
     let dens = density(p) * viewThin;
@@ -346,8 +345,8 @@ struct Out {
       let a = 1.0 - exp(-dens * ds * 5.0);
       // Self-shadowing: a short march toward the key light.
       var occ = 0.0;
-      for (var j = 1; j <= 3; j++) { occ += density(p + L * (0.12 * f32(j))); }
-      let shadow = exp(-occ * 0.55);
+      for (var j = 1; j <= 2; j++) { occ += density(p + L * (0.18 * f32(j))); }
+      let shadow = exp(-occ * 0.8);
       // Ambient fill + shadowed key + forward-scattered backlight, which
       // brightens the thin edges most.
       let thin = 1.0 - min(dens * 0.6, 1.0);
@@ -774,10 +773,19 @@ async function main() {
   canvas.addEventListener('pointerenter', () => { hover = true; });
   canvas.addEventListener('pointerleave', () => { hover = false; dragging = null; });
 
+  // WebKit's WebGPU is slower on large HDR/MSAA targets than Chromium's, and
+  // a struggling GPU drags the whole system, so Safari gets a smaller budget.
+  const isWebKit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg/.test(navigator.userAgent);
+  const pixelBudget = isWebKit ? 1.4e6 : 2.5e6;
+
   // Render targets, rebuilt on resize.
   let rt = null, size = [0, 0];
   const resize = () => {
-    const dpr = Math.min(devicePixelRatio, 2);
+    // Cap the internal resolution: 1.5x DPR and ~2.5 Mpx. MSAA hides the
+    // difference, and the HDR/MSAA/ray-march cost scales with pixel count.
+    let dpr = Math.min(devicePixelRatio, 1.5);
+    const px = canvas.clientWidth * canvas.clientHeight * dpr * dpr;
+    if (px > pixelBudget) dpr *= Math.sqrt(pixelBudget / px);
     const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
     if (w === size[0] && h === size[1] || !w || !h) return;
     size = [w, h]; canvas.width = w; canvas.height = h;
@@ -814,7 +822,9 @@ async function main() {
     const dist = 5.9, target = [0, 0.65, 0];
     const eye = [target[0] + Math.sin(yaw) * Math.cos(pitch) * dist, target[1] + Math.sin(pitch) * dist, target[2] + Math.cos(yaw) * Math.cos(pitch) * dist];
     const aspect = size[0] / size[1];
-    const fov = 2 * Math.atan(Math.tan(0.3) / Math.min(aspect, 1));
+    // Sized like the flat page: the whole scene spans ~40% of the shorter
+    // dimension (a wider FOV at the same distance keeps the same perspective).
+    const fov = 2 * Math.atan(Math.tan(0.3) * 2.4 / Math.min(aspect, 1));
     const viewProj = mat.multiply(mat.perspective(fov, aspect, 0.1, 50), mat.lookAt(eye, target, [0, 1, 0]));
     sceneData.set(viewProj, 0);
     sceneData.set(eye, 16); sceneData[19] = dark.matches ? 0.55 : 1.0;
