@@ -77,8 +77,8 @@ fn envRadiance(d: vec3f) -> vec3f {
   let sky = mix(vec3f(0.22, 0.23, 0.26), vec3f(0.85, 0.87, 0.92), smoothstep(-0.3, 0.7, d.y));
   let floor_ = vec3f(0.12, 0.11, 0.1);
   var c = mix(floor_, sky, smoothstep(-0.6, -0.1, d.y));
-  c += vec3f(1.0, 0.98, 0.95) * pow(max(dot(d, normalize(WIN1)), 0.0), 48.0) * 5.0;
-  c += vec3f(0.95, 0.97, 1.0) * pow(max(dot(d, normalize(WIN2)), 0.0), 64.0) * 2.5;
+  c += vec3f(1.0, 0.98, 0.95) * pow(max(dot(d, normalize(WIN1)), 0.0), 48.0) * 2.4;
+  c += vec3f(0.95, 0.97, 1.0) * pow(max(dot(d, normalize(WIN2)), 0.0), 64.0) * 1.4;
   return c * scene.envScale;
 }
 fn envDiffuse(n: vec3f) -> vec3f {
@@ -180,7 +180,7 @@ struct Out {
     let film = smoothstep(0.35, 0.8, swirl) * 0.16 + 0.03;
     let body = mix(base, amber * amber * 1.1, film);
     base = mix(body, foamCol * foamCol, foam); // foam colours were tuned in gamma space
-    rough = mix(0.08, 0.6, foam);
+    rough = mix(0.12, 0.6, foam);
     // Liquid surface: a meniscus climbing the wall, and slow, faint ripples.
     let radial = normalize(vec3f(q.x, 0.0, q.y));
     let meniscus = smoothstep(0.76, wall, r) * 0.9;
@@ -240,10 +240,13 @@ struct Out {
 // ray through it.
 const steamShader = common + /* wgsl */ `
 // Ridged noise: thin bright sheets where the noise crosses its midpoint.
+// Octaves are rotated so value noise's grid alignment doesn't show as
+// horizontal layering in the plume.
+const ROT = mat3x3f(vec3f(0.36, 0.48, -0.8), vec3f(-0.8, 0.6, 0.0), vec3f(0.48, 0.64, 0.6));
 fn ridged(p: vec3f) -> f32 {
-  let a = 1.0 - abs(2.0 * noise3(p) - 1.0);
-  let b = 1.0 - abs(2.0 * noise3(p * 2.1 + 3.7) - 1.0);
-  let c = 1.0 - abs(2.0 * noise3(p * 4.3 + 9.1) - 1.0);
+  let a = 1.0 - abs(2.0 * noise3(ROT * p) - 1.0);
+  let b = 1.0 - abs(2.0 * noise3(ROT * ROT * p * 2.1 + 3.7) - 1.0);
+  let c = 1.0 - abs(2.0 * noise3(ROT * p * 4.3 + 9.1) - 1.0);
   return (a + b * 0.45 + c * 0.15) / 1.6;
 }
 
@@ -259,8 +262,10 @@ fn density(p: vec3f) -> f32 {
   let axis = vec2f(sin(time * 0.08) * 0.12 + hn * sin(time * 0.13) * 0.35,
                    cos(time * 0.07) * 0.12 + hn * cos(time * 0.11) * 0.3);
   let d = length(p.xz - axis);
-  let rad = 0.18 + hn * 0.42;
-  let env = exp(-(d * d) / (rad * rad) * 2.2) * smoothstep(0.0, 0.05, hn) * exp(-2.4 * hn) * (1.0 - smoothstep(0.45, 0.85, hn));
+  // Faint and broad right at the surface (vapour has not condensed yet),
+  // building over the first fifth of the height, then decaying.
+  let rad = 0.3 + hn * 0.35;
+  let env = exp(-(d * d) / (rad * rad) * 2.2) * smoothstep(0.0, 0.22, hn) * exp(-2.0 * hn) * (1.0 - smoothstep(0.45, 0.85, hn));
   if (env < 0.003) { return 0.0; }
   // Structure: ridged noise in coordinates that rise with time, domain-warped
   // by slower noise so the sheets fold; the warp grows with height as the
@@ -361,7 +366,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 @fragment fn bright(i: Out) -> @location(0) vec4f {
   let c = textureSample(texA, samp, i.uv);
   let lum = dot(c.rgb, vec3f(0.2126, 0.7152, 0.0722));
-  let k = smoothstep(0.9, 1.6, lum);
+  let k = smoothstep(1.3, 2.4, lum);
   return vec4f(c.rgb * k, 1.0);
 }
 
@@ -648,7 +653,7 @@ async function main() {
   const ceramic = [0.86, 0.86, 0.87, 1];
   setInstance(0, ceramic, [1, 0.2, 0, 0]);
   setInstance(1, [0.78, 0.78, 0.79, 1], [3, 0.22, 0, 0]);
-  setInstance(2, [0.045, 0.02, 0.008, 1], [2, 0.08, 0, 0]);
+  setInstance(2, [0.045, 0.02, 0.008, 1], [2, 0.12, 0, 0]);
   setInstance(3, ceramic, [4, 0.2, 0, 0]);
   device.queue.writeBuffer(instBuf, 0, instData);
 
