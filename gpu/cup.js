@@ -301,12 +301,26 @@ struct Out {
   let tn = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
   let tf = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
   if (tf <= max(tn, 0.0)) { discard; }
-  // The cup wall hides anything below the rim unless the ray comes in
-  // through the opening: find where the ray crosses rim height.
+  // The cup hides everything beyond the point where the ray meets its wall
+  // below the rim: from below, that is the near wall; from above, the ray
+  // enters through the opening and is stopped by the far wall.
   let RIM = 1.385;
-  let tRim = (RIM - ro.y) / rd.y;
-  let atRim = ro + rd * tRim;
-  let throughOpening = tRim > 0.0 && length(atRim.xz) < 0.86;
+  var tBlock = 1e9;
+  {
+    let qa = rd.x * rd.x + rd.z * rd.z;
+    let qb = 2.0 * (ro.x * rd.x + ro.z * rd.z);
+    let qc = ro.x * ro.x + ro.z * ro.z - 0.93 * 0.93;
+    let disc = qb * qb - 4.0 * qa * qc;
+    if (disc > 0.0 && qa > 1e-6) {
+      let sq = sqrt(disc);
+      let ta = (-qb - sq) / (2.0 * qa);
+      let tb = (-qb + sq) / (2.0 * qa);
+      let ya = ro.y + rd.y * ta;
+      let yb = ro.y + rd.y * tb;
+      if (ta > 0.0 && ya > -0.1 && ya < RIM) { tBlock = ta; }
+      else if (tb > 0.0 && yb > -0.1 && yb < RIM) { tBlock = tb; }
+    }
+  }
   // Key light for self-shadowing; a backlight behind the plume for the
   // bright, forward-scattered edges of backlit vapour.
   let L = normalize(scene.light);
@@ -314,6 +328,9 @@ struct Out {
   let cosBack = dot(rd, back);
   let g = 0.55;
   let hg = (1.0 - g * g) / (4.0 * 3.14159 * pow(1.0 + g * g - 2.0 * g * cosBack, 1.5));
+  // Looking straight down the plume integrates its whole height; the real
+  // thing is thin sheets, not a solid column, so thin it for vertical views.
+  let viewThin = 1.0 - 0.7 * rd.y * rd.y;
   let steps = 36.0;
   let ds = (tf - max(tn, 0.0)) / steps;
   // Jitter the start per pixel to trade banding for fine grain.
@@ -321,9 +338,9 @@ struct Out {
   var trans = 1.0;
   var lum = 0.0;
   for (var k = 0; k < 36; k++) {
+    if (t > tBlock) { break; }
     let p = ro + rd * t;
-    var dens = density(p);
-    if (p.y < RIM && !throughOpening) { dens = 0.0; }
+    let dens = density(p) * viewThin;
     if (dens > 0.002) {
       let a = 1.0 - exp(-dens * ds * 5.0);
       // Self-shadowing: a short march toward the key light.
