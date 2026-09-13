@@ -271,6 +271,15 @@ function cupOuterRadius(y) {
   }
   return outerWall.at(-1)[0];
 }
+// Outward normal of the cup wall at a point (x, y, z) on or near it.
+function cupOuterNormal(x, y, z) {
+  let i = 1;
+  while (i < outerWall.length - 1 && outerWall[i][1] < y) i++;
+  const [r0, y0] = outerWall[i - 1], [r1, y1] = outerWall[i];
+  const [nr, ny] = norm([y1 - y0, -(r1 - r0), 0]);
+  const a = Math.atan2(z, x);
+  return [nr * Math.cos(a), ny, nr * Math.sin(a)];
+}
 
 // Saucer: foot ring underneath, central well with a ridge that seats the cup,
 // a gently rising dish, and a rolled rim. About 1.5x the cup's rim.
@@ -287,13 +296,37 @@ const coffeeProfile = [[0.85, coffeeLevel], [0.0, coffeeLevel]]; // right-to-lef
 function handlePath() {
   const top = 0.98, bottom = 0.5, inset = 0.07;
   const p0 = [cupOuterRadius(top) - inset, top], p3 = [cupOuterRadius(bottom) - inset, bottom];
-  const p1 = [p0[0] + 0.62, top + 0.08], p2 = [p3[0] + 0.66, bottom - 0.14];
+  // Leaves the wall rising a little, arcs over, and comes down to the
+  // lower attachment; the upper root is near the handle's highest point.
+  const p1 = [p0[0] + 0.5, top + 0.24], p2 = [p3[0] + 0.68, bottom - 0.12];
   const path = [];
   for (let i = 0; i <= 48; i++) {
     const t = i / 48, u = 1 - t;
     path.push([0, 1].map((k) => u * u * u * p0[k] + 3 * u * u * t * p1[k] + 3 * u * t * t * p2[k] + t * t * t * p3[k]));
   }
   return path;
+}
+
+// Blend the handle's normals into the cup wall's over the fillet zone so the
+// shading runs continuously across the joint instead of showing a seam.
+function blendRoots(mesh, zone = 0.2) {
+  const ring = 17, rows = mesh.pos.length / 3 / ring;
+  for (let i = 0; i < rows; i++) {
+    const t = i / (rows - 1), end = Math.min(t, 1 - t) / zone;
+    if (end >= 1) continue;
+    const w = Math.pow(1 - end, 2);
+    for (let j = 0; j < ring; j++) {
+      const k = (i * ring + j) * 3;
+      const wall = cupOuterNormal(mesh.pos[k], mesh.pos[k + 1], mesh.pos[k + 2]);
+      const n = norm([
+        mesh.nrm[k] * (1 - w) + wall[0] * w,
+        mesh.nrm[k + 1] * (1 - w) + wall[1] * w,
+        mesh.nrm[k + 2] * (1 - w) + wall[2] * w,
+      ]);
+      mesh.nrm[k] = n[0]; mesh.nrm[k + 1] = n[1]; mesh.nrm[k + 2] = n[2];
+    }
+  }
+  return mesh;
 }
 
 // ---- tiny matrix helpers (column-major, like WGSL) ------------------------
@@ -354,12 +387,12 @@ async function main() {
     coffee: lathe(coffeeProfile, 48),
     // Radius flares toward each end and blends into a short fillet where it
     // meets the body, as a luted, glazed handle does.
-    handle: sweep(handlePath(), (t) => {
+    handle: blendRoots(sweep(handlePath(), (t) => {
       const end = Math.min(t, 1 - t) / 0.14; // 0 at the wall, 1 a little way out
       const flare = 1 + 0.3 * Math.pow(1 - Math.min(end, 1), 2);
       const fillet = end < 0.18 ? 1 + 0.35 * Math.pow(1 - end / 0.18, 2) : 1;
       return 0.085 * flare * fillet;
-    }),
+    })),
   };
   for (const m of Object.values(meshes)) {
     const v = [];
