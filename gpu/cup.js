@@ -29,6 +29,32 @@ fn noise(p: vec2f) -> f32 {
   let i = floor(p); let f = fract(p); let u = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash(i), hash(i + vec2f(1, 0)), u.x), mix(hash(i + vec2f(0, 1)), hash(i + vec2f(1, 1)), u.x), u.y);
 }
+fn hash2(p: vec2f) -> vec2f { return vec2f(hash(p), hash(p + vec2f(19.3, 7.7))); }
+// Cellular bubble field. Returns (coverage, shade) where shade runs from -1
+// on the bubble's dark rim to +1 at the highlight.
+fn bubbles(p: vec2f, scale: f32, density: f32, seed: f32) -> vec2f {
+  let q = p * scale + seed;
+  let cell = floor(q);
+  let f = fract(q);
+  var best = vec2f(0.0, 0.0);
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      let n = vec2f(f32(x), f32(y));
+      let id = cell + n;
+      if (hash(id + 3.1) > density) { continue; }
+      let centre = n + hash2(id) * 0.8 + 0.1;
+      let rad = 0.16 + hash(id + 5.3) * 0.26;
+      let d = f - centre;
+      let dist = length(d);
+      let cover = smoothstep(rad, rad * 0.72, dist);
+      if (cover > best.x) {
+        let shade = dot(d / rad, normalize(vec2f(-0.6, 0.8)));
+        best = vec2f(cover, shade);
+      }
+    }
+  }
+  return best;
+}
 struct Out {
   @builtin(position) pos: vec4f,
   @location(0) worldPos: vec3f,
@@ -67,14 +93,30 @@ struct Out {
     let outside = step(0.0, dot(normalize(i.normal.xz), normalize(i.localPos.xz)));
     base = mix(base, vec3f(0.12, 0.12, 0.13), clamp(ring1 + ring2, 0.0, 1.0) * outside);
   } else if (material > 1.5) {
-    // Coffee: near-uniform dark surface that lightens slightly toward the
-    // wall, with a thin ring of tiny bubbles where it meets the cup.
+    // Coffee. Crema on black coffee is a ring of clustered bubbles at the
+    // wall with a few strays, over a faint swirled film. Bubbles come from a
+    // cellular field in two sizes; each is shaded like a tiny lens.
     let q = i.localPos.xz;
-    let crema = vec3f(0.58, 0.4, 0.22);
-    let edgeTint = smoothstep(0.6, 0.85, r) * 0.25;
-    let ringMask = smoothstep(0.7, 0.8, r) * (1.0 - smoothstep(0.82, 0.85, r));
-    let bubbles = smoothstep(0.62, 0.8, noise(q * 70.0)) * 0.7 + smoothstep(0.7, 0.85, noise(q * 130.0 + 3.0)) * 0.5;
-    base = mix(base, crema, edgeTint + ringMask * bubbles);
+    let angle = atan2(q.y, q.x);
+    let tan_ = vec3f(0.7, 0.52, 0.3);
+    // Thin film with soft swirls; barely there.
+    let film = smoothstep(0.35, 0.8, noise(q * 5.0 + noise(q * 11.0 + 3.0) * 0.9)) * 0.06;
+    base = mix(base, tan_, film + smoothstep(0.7, 0.85, r) * 0.1);
+    // Bubble density: strong in a ring at the wall whose inner edge wanders,
+    // low but non-zero elsewhere so a few strays float in the middle.
+    let inner = 0.71 + (noise(vec2f(angle * 2.5, 1.7)) - 0.5) * 0.1;
+    let patchy = 0.35 + 0.65 * noise(vec2f(angle * 5.0, r * 12.0));
+    let ring = smoothstep(inner, inner + 0.05, r) * patchy;
+    let cluster = smoothstep(0.72, 0.88, noise(q * 3.2 + 9.0)) * (1.0 - ring);
+    let density = ring * 0.95 + cluster * 0.7;
+    let big = bubbles(q, 15.0, density * 0.6, 11.0);
+    let small = bubbles(q, 38.0, density, 29.0);
+    var bub = big;
+    if (small.x > big.x) { bub = small; }
+    // Lens shading: darker toward the rim, a bright highlight on the lit side.
+    let lensLight = mix(tan_ * 0.75, tan_ * 1.35, bub.y * 0.5 + 0.5);
+    let highlight = smoothstep(0.55, 0.9, bub.y) * 0.45;
+    base = mix(base, lensLight + vec3f(highlight), bub.x);
     gloss = 20.0; specAmt = 0.45;
   }
   let n = normalize(i.normal);
