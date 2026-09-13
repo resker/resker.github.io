@@ -23,8 +23,8 @@ main {
 
 canvas {
   display: block;
-  width: 70vmin;
-  height: 70vmin;
+  width: 100vw;
+  height: 100dvh;
   touch-action: none;
   cursor: grab;
 }
