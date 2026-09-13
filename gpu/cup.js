@@ -20,15 +20,15 @@ struct Instance {
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> instances: array<Instance>;
-`;
-
-const litShader = common + /* wgsl */ `
-// Cheap value noise for the crema.
+// Cheap value noise, used by the crema and the steam.
 fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453); }
 fn noise(p: vec2f) -> f32 {
   let i = floor(p); let f = fract(p); let u = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash(i), hash(i + vec2f(1, 0)), u.x), mix(hash(i + vec2f(0, 1)), hash(i + vec2f(1, 1)), u.x), u.y);
 }
+`;
+
+const litShader = common + /* wgsl */ `
 fn hash2(p: vec2f) -> vec2f { return vec2f(hash(p), hash(p + vec2f(19.3, 7.7))); }
 // Distance to the nearest of a jittered grid of points: packed-cell texture.
 fn cells(p: vec2f) -> f32 {
@@ -125,16 +125,18 @@ struct Out {
   return vec4f(lit, 1.0);
 }`;
 
-// Steam: each wisp is a camera-facing ribbon. The vertex shader bends it with
-// travelling waves so it curls as it rises; alpha fades at both ends and at the
-// ribbon's edges so it reads as vapour rather than a strip.
+// Steam: each wisp is a camera-facing ribbon shaped in the vertex shader as a
+// buoyant plume. Near the surface it is thin and laminar; with height it
+// accelerates, sways, turns turbulent, widens by diffusion and fades as the
+// droplets re-evaporate. Room air adds a slow common drift.
 const steamShader = common + /* wgsl */ `
 struct Out {
   @builtin(position) pos: vec4f,
   @location(0) t: f32,
   @location(1) side: f32,
   @location(2) fade: f32,
-  @location(3) @interpolate(flat) id: u32,
+  @location(3) uv: vec2f,
+  @location(4) @interpolate(flat) id: u32,
 };
 
 @vertex fn vs(@location(0) a: vec2f, @builtin(instance_index) id: u32) -> Out {
@@ -144,22 +146,30 @@ struct Out {
   let speed = inst.params.y;
   let sway = inst.params.z;
   let height = inst.params.w;
-  let time = scene.time * speed;
-  // Curl: two travelling sine waves per axis, growing with height.
-  let grow = 0.25 + t * 1.1;
-  let x = (sin(t * 7.0 - time * 1.9 + phase) * 0.55 + sin(t * 15.0 - time * 3.1 + phase * 2.0) * 0.18) * sway * grow;
-  let z = (cos(t * 6.0 - time * 1.6 + phase * 1.3) * 0.45 + sin(t * 12.0 - time * 2.6) * 0.15) * sway * grow;
+  // Features move faster higher up: buoyant acceleration.
+  let adv = scene.time * speed * (0.7 + t * 0.9);
+  // Laminar sway, growing with height.
+  let lam = 0.15 + t * 0.85;
+  var x = (sin(t * 5.0 - adv * 1.6 + phase) * 0.6 + sin(t * 9.0 - adv * 2.4 + phase * 2.0) * 0.25) * sway * lam;
+  var z = (cos(t * 4.5 - adv * 1.3 + phase * 1.3) * 0.5 + sin(t * 8.0 - adv * 2.0) * 0.2) * sway * lam;
+  // Turbulence: fine, fast, and only really present once the plume has risen.
+  let turb = t * t * sway * 0.9;
+  x += (noise(vec2f(t * 14.0 - adv * 3.0, phase)) - 0.5) * turb;
+  z += (noise(vec2f(t * 13.0 - adv * 2.7, phase + 5.0)) - 0.5) * turb;
+  // Slow common drift from room air.
+  let drift = vec3f(0.35, 0.0, 0.15) * (0.6 + 0.4 * sin(scene.time * 0.17)) * t * t;
   let base = (inst.model * vec4f(0, 0, 0, 1)).xyz;
-  let centre = base + vec3f(x, t * height, z);
-  // Billboard the width across the camera's right vector.
+  let centre = base + vec3f(x, t * height, z) + drift;
+  // Billboard across the camera's right vector; widen with height (diffusion).
   let toEye = normalize(scene.eye - centre);
   let flat = vec3f(toEye.x, 0.0, toEye.z);
   let right = normalize(cross(vec3f(0, 1, 0), select(flat, vec3f(1, 0, 0), length(flat) < 1e-3)));
-  let width = (0.05 + t * 0.16) * (1.0 - t * 0.35);
+  let width = 0.035 + t * 0.26 + t * t * 0.1;
   var o: Out;
   o.pos = scene.viewProj * vec4f(centre + right * a.y * width, 1);
   o.t = t;
   o.side = a.y;
+  o.uv = vec2f(t * 6.0 - adv * 0.9, a.y * 1.5 + phase);
   // Seen from overhead a ribbon is edge-on and meaningless; fade it out.
   o.fade = 1.0 - smoothstep(0.55, 0.9, toEye.y);
   o.id = id;
@@ -168,9 +178,15 @@ struct Out {
 
 @fragment fn fs(i: Out) -> @location(0) vec4f {
   let inst = instances[i.id];
-  let along = pow(sin(i.t * 3.14159), 1.4) * (1.0 - i.t * 0.3);
-  let across = 1.0 - i.side * i.side;
-  let a = inst.color.a * along * across * across * i.fade;
+  // Density: ramps in just above the surface, then decays as it spreads and
+  // the droplets evaporate; softer edges higher up.
+  let rise = smoothstep(0.0, 0.08, i.t);
+  let decay = exp(-2.6 * i.t) * (1.0 - smoothstep(0.75, 1.0, i.t));
+  let edge = mix(0.85, 0.35, i.t);
+  let across = 1.0 - smoothstep(edge, 1.0, abs(i.side));
+  // Filaments and gaps along the plume.
+  let fil = 0.45 + 0.55 * noise(i.uv * vec2f(2.0, 1.0)) * noise(i.uv * vec2f(5.0, 2.5) + 3.0) * 1.6;
+  let a = inst.color.a * rise * decay * across * across * fil * i.fade;
   return vec4f(inst.color.rgb * a, a); // premultiplied
 }`;
 
@@ -232,7 +248,7 @@ function sweep(path, tubeSpec, ring = 16) {
 }
 
 // Ribbon for a steam wisp: (t, side) pairs, shaped in the vertex shader.
-function ribbon(steps = 48) {
+function ribbon(steps = 96) {
   const pos = [], idx = [];
   for (let i = 0; i <= steps; i++) { pos.push(i / steps, -1, i / steps, 1); }
   for (let i = 0; i < steps; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
@@ -403,7 +419,7 @@ async function main() {
   const wisp = upload(wispMesh, wispMesh.pos);
 
   // Instance table: 0 cup, 1 saucer, 2 coffee, 3 handle, then the wisps.
-  const WISPS = 4, STEAM_START = 4;
+  const WISPS = 6, STEAM_START = 4;
   const INST_FLOATS = 24; // mat4 (16) + color (4) + params (4)
   const instData = new Float32Array((STEAM_START + WISPS) * INST_FLOATS);
   const instBuf = device.createBuffer({ size: instData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -419,15 +435,21 @@ async function main() {
   setInstance(3, mat.identity(), ceramic);
   // Wisps: base position, tint, [phase, speed, sway, height].
   const wispSpecs = [
-    [[-0.15, 0.1], 1.0, 0.9, 0.22, 1.05],
-    [[0.18, -0.05], 2.7, 0.7, 0.28, 1.25],
-    [[0.02, 0.2], 4.4, 1.1, 0.18, 0.95],
-    [[-0.05, -0.18], 5.9, 0.55, 0.3, 1.35],
+    [[-0.2, 0.12], 1.0, 0.9, 0.2, 1.1],
+    [[0.22, -0.06], 2.7, 0.75, 0.26, 1.3],
+    [[0.02, 0.24], 4.4, 1.05, 0.17, 0.95],
+    [[-0.08, -0.22], 5.9, 0.6, 0.28, 1.4],
+    [[0.3, 0.18], 7.3, 0.85, 0.22, 1.0],
+    [[-0.3, -0.05], 8.8, 0.7, 0.24, 1.2],
   ];
-  const setWisps = (dark) => {
-    const tint = dark ? [0.9, 0.84, 0.72, 0.4] : [0.7, 0.58, 0.42, 0.2];
+  // Steam is condensed water: whitish, seen by scattering. Against a light
+  // page it reads as a faint grey instead.
+  const setWisps = (dark, time) => {
+    const tint = dark ? [0.95, 0.93, 0.9, 0.55] : [0.5, 0.47, 0.44, 0.28];
     wispSpecs.forEach(([[x, z], phase, speed, sway, height], w) => {
-      setInstance(STEAM_START + w, mat.translate(x, coffeeLevel + 0.02, z), tint, [phase, speed, sway, height]);
+      // Sources wander slowly across the surface.
+      const wx = x + Math.sin(time * 0.23 + phase) * 0.1, wz = z + Math.cos(time * 0.19 + phase * 1.7) * 0.1;
+      setInstance(STEAM_START + w, mat.translate(wx, coffeeLevel + 0.02, wz), tint, [phase, speed, sway, height]);
     });
   };
 
@@ -520,7 +542,7 @@ async function main() {
     sceneData.set(eye, 16); sceneData[19] = dark.matches ? 0.25 : 0.5;
     sceneData.set(light, 20); sceneData[23] = steamTime;
     device.queue.writeBuffer(sceneBuf, 0, sceneData);
-    setWisps(dark.matches);
+    setWisps(dark.matches, steamTime);
     device.queue.writeBuffer(instBuf, 0, instData);
 
     const bg = dark.matches ? [0, 0, 0, 1] : [1, 1, 1, 1];
