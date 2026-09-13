@@ -193,8 +193,8 @@ struct Out {
     let eps = 0.05;
     let n0 = noise3(p);
     let g = vec3f(noise3(p + vec3f(eps, 0, 0)) - n0, noise3(p + vec3f(0, eps, 0)) - n0, noise3(p + vec3f(0, 0, eps)) - n0);
-    n = normalize(n + (g - n * dot(g, n)) * 0.14);
-    base *= 0.985 + 0.03 * noise3(i.localPos * 5.0 + 3.0);
+    n = normalize(n + (g - n * dot(g, n)) * 0.05);
+    base *= 0.992 + 0.016 * noise3(i.localPos * 5.0 + 3.0);
     if (material < 1.5) {
       // Two dark rings around the outside of the cup, like the artwork.
       let y = i.localPos.y;
