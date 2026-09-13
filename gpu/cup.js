@@ -203,11 +203,14 @@ function lathe(profile, segments = 64) {
   return { pos, nrm, idx };
 }
 
-// Tube swept along a polyline in the XY plane (the handle).
-function sweep(path, tube, ring = 16) {
+// Tube swept along a polyline in the XY plane (the handle). `tube` may be a
+// function of position along the path (0..1) for a varying radius.
+function sweep(path, tubeSpec, ring = 16) {
   const pos = [], nrm = [], idx = [];
+  const tubeAt = typeof tubeSpec === 'function' ? tubeSpec : () => tubeSpec;
   for (let i = 0; i < path.length; i++) {
     const [px, py] = path[i];
+    const tube = tubeAt(i / (path.length - 1));
     const [ax, ay] = path[Math.max(i - 1, 0)], [bx, by] = path[Math.min(i + 1, path.length - 1)];
     let tx = bx - ax, ty = by - ay;
     const len = Math.hypot(tx, ty) || 1;
@@ -282,7 +285,7 @@ const coffeeProfile = [[0.85, coffeeLevel], [0.0, coffeeLevel]]; // right-to-lef
 // Handle: one smooth cubic Bezier that leaves the wall just below the rings,
 // loops outward, and re-enters at mid-cup. Both ends sit inside the wall.
 function handlePath() {
-  const top = 0.98, bottom = 0.5, inset = 0.05;
+  const top = 0.98, bottom = 0.5, inset = 0.07;
   const p0 = [cupOuterRadius(top) - inset, top], p3 = [cupOuterRadius(bottom) - inset, bottom];
   const p1 = [p0[0] + 0.62, top + 0.08], p2 = [p3[0] + 0.66, bottom - 0.14];
   const path = [];
@@ -349,7 +352,14 @@ async function main() {
     cup: lathe(cupProfile),
     saucer: lathe(saucerProfile),
     coffee: lathe(coffeeProfile, 48),
-    handle: sweep(handlePath(), 0.085),
+    // Radius flares toward each end and blends into a short fillet where it
+    // meets the body, as a luted, glazed handle does.
+    handle: sweep(handlePath(), (t) => {
+      const end = Math.min(t, 1 - t) / 0.14; // 0 at the wall, 1 a little way out
+      const flare = 1 + 0.3 * Math.pow(1 - Math.min(end, 1), 2);
+      const fillet = end < 0.18 ? 1 + 0.35 * Math.pow(1 - end / 0.18, 2) : 1;
+      return 0.085 * flare * fillet;
+    }),
   };
   for (const m of Object.values(meshes)) {
     const v = [];
