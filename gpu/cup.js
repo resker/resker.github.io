@@ -17,6 +17,7 @@ struct Instance {
   model: mat4x4f,
   color: vec4f,
   params: vec4f, // x: material (1 cup rings, 2 coffee); wisps: phase, speed, sway, height
+  life: vec4f,   // wisps: age 0..1, then unused
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(0) @binding(1) var<storage, read> instances: array<Instance>;
@@ -158,13 +159,19 @@ struct Out {
   z += (noise(vec2f(t * 13.0 - adv * 2.7, phase + 5.0)) - 0.5) * turb;
   // Slow common drift from room air.
   let drift = vec3f(0.35, 0.0, 0.15) * (0.6 + 0.4 * sin(scene.time * 0.17)) * t * t;
+  // Lifecycle: the sheet grows upward when young; when old its base detaches
+  // and the whole thing lifts away while it spreads.
+  let age = inst.life.x;
+  let lift = smoothstep(0.5, 1.0, age) * 1.2;
+  let spread = 1.0 + smoothstep(0.6, 1.0, age) * 1.5;
+  x *= spread; z *= spread;
   let base = (inst.model * vec4f(0, 0, 0, 1)).xyz;
-  let centre = base + vec3f(x, t * height, z) + drift;
+  let centre = base + vec3f(x, t * height + lift, z) + drift;
   // Billboard across the camera's right vector; widen with height (diffusion).
   let toEye = normalize(scene.eye - centre);
   let flat = vec3f(toEye.x, 0.0, toEye.z);
   let right = normalize(cross(vec3f(0, 1, 0), select(flat, vec3f(1, 0, 0), length(flat) < 1e-3)));
-  let width = 0.035 + t * 0.26 + t * t * 0.1;
+  let width = (0.035 + t * 0.26 + t * t * 0.1) * spread;
   var o: Out;
   o.pos = scene.viewProj * vec4f(centre + right * a.y * width, 1);
   o.t = t;
@@ -180,7 +187,14 @@ struct Out {
   let inst = instances[i.id];
   // Density: ramps in just above the surface, then decays as it spreads and
   // the droplets evaporate; softer edges higher up.
-  let rise = smoothstep(0.0, 0.08, i.t);
+  let age = inst.life.x;
+  // Growth: the top forms as it rises; detachment: the base thins out first.
+  let grown = smoothstep(0.0, 0.45, age);
+  let top = 1.0 - smoothstep(grown - 0.15, grown, i.t);
+  let detach = smoothstep(0.45, 0.9, age);
+  let bottom = smoothstep(detach - 0.05, detach + 0.25, i.t);
+  let env = smoothstep(0.0, 0.12, age) * (1.0 - smoothstep(0.7, 1.0, age));
+  let rise = smoothstep(0.0, 0.08, i.t) * top * bottom * env;
   let decay = exp(-2.6 * i.t) * (1.0 - smoothstep(0.75, 1.0, i.t));
   let edge = mix(0.85, 0.35, i.t);
   let across = 1.0 - smoothstep(edge, 1.0, abs(i.side));
@@ -420,13 +434,14 @@ async function main() {
 
   // Instance table: 0 cup, 1 saucer, 2 coffee, 3 handle, then the wisps.
   const WISPS = 6, STEAM_START = 4;
-  const INST_FLOATS = 24; // mat4 (16) + color (4) + params (4)
+  const INST_FLOATS = 28; // mat4 (16) + color (4) + params (4) + life (4)
   const instData = new Float32Array((STEAM_START + WISPS) * INST_FLOATS);
   const instBuf = device.createBuffer({ size: instData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  const setInstance = (i, model, color, params = [0, 0, 0, 0]) => {
+  const setInstance = (i, model, color, params = [0, 0, 0, 0], life = [0, 0, 0, 0]) => {
     instData.set(model, i * INST_FLOATS);
     instData.set(color, i * INST_FLOATS + 16);
     instData.set(params, i * INST_FLOATS + 20);
+    instData.set(life, i * INST_FLOATS + 24);
   };
   const ceramic = [0.93, 0.93, 0.94, 1];
   setInstance(0, mat.identity(), ceramic, [1, 0, 0, 0]);
@@ -442,14 +457,24 @@ async function main() {
     [[0.3, 0.18], 7.3, 0.85, 0.22, 1.0],
     [[-0.3, -0.05], 8.8, 0.7, 0.24, 1.2],
   ];
+  // Each wisp is a transient sheet of vapour: born somewhere on the surface,
+  // it grows, detaches, dissipates, and is replaced by a new one elsewhere.
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const spawn = (w, time) => {
+    const r = Math.sqrt(Math.random()) * 0.55, a = Math.random() * Math.PI * 2;
+    return { x: Math.cos(a) * r, z: Math.sin(a) * r, born: time, life: rnd(3.5, 7), phase: rnd(0, 12),
+             speed: rnd(0.7, 1.1), sway: rnd(0.16, 0.3), height: rnd(0.7, 1.3) };
+  };
+  const wisps = wispSpecs.map((_, w) => { const s = spawn(w, 0); s.born = -Math.random() * s.life; return s; });
   // Steam is condensed water: whitish, seen by scattering. Against a light
   // page it reads as a faint grey instead.
   const setWisps = (dark, time) => {
-    const tint = dark ? [0.95, 0.93, 0.9, 0.55] : [0.5, 0.47, 0.44, 0.28];
-    wispSpecs.forEach(([[x, z], phase, speed, sway, height], w) => {
-      // Sources wander slowly across the surface.
-      const wx = x + Math.sin(time * 0.23 + phase) * 0.1, wz = z + Math.cos(time * 0.19 + phase * 1.7) * 0.1;
-      setInstance(STEAM_START + w, mat.translate(wx, coffeeLevel + 0.02, wz), tint, [phase, speed, sway, height]);
+    const tint = dark ? [0.95, 0.93, 0.9, 0.42] : [0.5, 0.47, 0.44, 0.22];
+    wisps.forEach((s, w) => {
+      let age = (time - s.born) / s.life;
+      if (age >= 1) { wisps[w] = spawn(w, time); age = 0; }
+      const c = wisps[w];
+      setInstance(STEAM_START + w, mat.translate(c.x, coffeeLevel + 0.02, c.z), tint, [c.phase, c.speed, c.sway, c.height], [age, 0, 0, 0]);
     });
   };
 
