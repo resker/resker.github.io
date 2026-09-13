@@ -96,7 +96,8 @@ struct Out {
   @builtin(position) pos: vec4f,
   @location(0) t: f32,
   @location(1) side: f32,
-  @location(2) @interpolate(flat) id: u32,
+  @location(2) fade: f32,
+  @location(3) @interpolate(flat) id: u32,
 };
 
 @vertex fn vs(@location(0) a: vec2f, @builtin(instance_index) id: u32) -> Out {
@@ -115,12 +116,15 @@ struct Out {
   let centre = base + vec3f(x, t * height, z);
   // Billboard the width across the camera's right vector.
   let toEye = normalize(scene.eye - centre);
-  let right = normalize(cross(vec3f(0, 1, 0), toEye));
+  let flat = vec3f(toEye.x, 0.0, toEye.z);
+  let right = normalize(cross(vec3f(0, 1, 0), select(flat, vec3f(1, 0, 0), length(flat) < 1e-3)));
   let width = (0.05 + t * 0.16) * (1.0 - t * 0.35);
   var o: Out;
   o.pos = scene.viewProj * vec4f(centre + right * a.y * width, 1);
   o.t = t;
   o.side = a.y;
+  // Seen from overhead a ribbon is edge-on and meaningless; fade it out.
+  o.fade = 1.0 - smoothstep(0.55, 0.9, toEye.y);
   o.id = id;
   return o;
 }
@@ -129,7 +133,7 @@ struct Out {
   let inst = instances[i.id];
   let along = pow(sin(i.t * 3.14159), 1.4) * (1.0 - i.t * 0.3);
   let across = 1.0 - i.side * i.side;
-  let a = inst.color.a * along * across * across;
+  let a = inst.color.a * along * across * across * i.fade;
   return vec4f(inst.color.rgb * a, a); // premultiplied
 }`;
 
@@ -195,17 +199,35 @@ function ribbon(steps = 48) {
   return { pos, idx };
 }
 
-// Cup profile: bottom, up the outside, over the rim, down the inside.
-const cupProfile = [
-  [0.0, 0.0], [0.38, 0.0], [0.42, 0.03], [0.5, 0.06], [0.66, 0.2], [0.8, 0.5],
-  [0.88, 0.85], [0.92, 1.15], [0.93, 1.34], [0.93, 1.38], [0.87, 1.38],
-  [0.86, 1.3], [0.84, 1.05], [0.76, 0.6], [0.6, 0.3], [0.4, 0.2], [0.0, 0.18],
-];
-const outerWall = cupProfile.slice(1, 9); // (r, y) pairs, y increasing
+// Catmull-Rom spline through 2D points, sampled evenly per segment.
+function spline(points, per = 8) {
+  const out = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(i - 1, 0)], p1 = points[i], p2 = points[i + 1], p3 = points[Math.min(i + 2, points.length - 1)];
+    for (let j = 0; j < per; j++) {
+      const t = j / per, t2 = t * t, t3 = t2 * t;
+      out.push([0, 1].map((k) => 0.5 * ((2 * p1[k]) + (-p0[k] + p2[k]) * t +
+        (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2 + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t3)));
+    }
+  }
+  out.push(points.at(-1));
+  return out;
+}
+
+// Cup: a smooth bowl. Outside from the foot up to the rim, then the inside
+// back down. The rim is left sharp by splining the two halves separately.
+const outerWall = spline([
+  [0.38, 0.0], [0.46, 0.03], [0.58, 0.13], [0.72, 0.36], [0.84, 0.7],
+  [0.905, 1.02], [0.93, 1.3], [0.93, 1.38],
+]);
+const innerWall = spline([
+  [0.87, 1.38], [0.86, 1.28], [0.82, 0.95], [0.74, 0.62], [0.6, 0.36], [0.38, 0.22], [0.0, 0.2],
+]);
+const cupProfile = [[0.0, 0.0], ...outerWall, ...innerWall];
 function cupOuterRadius(y) {
   for (let i = 1; i < outerWall.length; i++) {
     const [r0, y0] = outerWall[i - 1], [r1, y1] = outerWall[i];
-    if (y <= y1) return r0 + (r1 - r0) * ((y - y0) / (y1 - y0));
+    if (y <= y1) return r0 + (r1 - r0) * ((y - y0) / (y1 - y0 || 1));
   }
   return outerWall.at(-1)[0];
 }
@@ -220,16 +242,17 @@ const saucerProfile = [
 const coffeeLevel = 1.18;
 const coffeeProfile = [[0.85, coffeeLevel], [0.0, coffeeLevel]]; // right-to-left so the normal faces up
 
-// Handle: a D-shaped arc whose ends turn in and stop inside the wall.
+// Handle: one smooth cubic Bezier that leaves the wall just below the rings,
+// loops outward, and re-enters at mid-cup. Both ends sit inside the wall.
 function handlePath() {
-  const cx = 1.02, cy = 0.78, R = 0.3, path = [];
-  const top = 1.06, bottom = 0.5, inset = 0.045;
-  path.push([cupOuterRadius(top) - inset, top], [cx - 0.05, top + 0.02]);
-  for (let i = 0; i <= 24; i++) {
-    const a = Math.PI * 0.55 - (Math.PI * 1.1) * (i / 24);
-    path.push([cx + Math.cos(a) * R, cy + Math.sin(a) * R]);
+  const top = 0.98, bottom = 0.5, inset = 0.05;
+  const p0 = [cupOuterRadius(top) - inset, top], p3 = [cupOuterRadius(bottom) - inset, bottom];
+  const p1 = [p0[0] + 0.62, top + 0.08], p2 = [p3[0] + 0.66, bottom - 0.14];
+  const path = [];
+  for (let i = 0; i <= 48; i++) {
+    const t = i / 48, u = 1 - t;
+    path.push([0, 1].map((k) => u * u * u * p0[k] + 3 * u * u * t * p1[k] + 3 * u * t * t * p2[k] + t * t * t * p3[k]));
   }
-  path.push([cx - 0.05, bottom - 0.01], [cupOuterRadius(bottom) - inset, bottom]);
   return path;
 }
 
@@ -289,7 +312,7 @@ async function main() {
     cup: lathe(cupProfile),
     saucer: lathe(saucerProfile),
     coffee: lathe(coffeeProfile, 48),
-    handle: sweep(handlePath(), 0.055),
+    handle: sweep(handlePath(), 0.085),
   };
   for (const m of Object.values(meshes)) {
     const v = [];
@@ -406,7 +429,8 @@ async function main() {
     steamTime += dt * (reducedMotion.matches ? 0 : hover ? 2.2 : 1);
 
     // Camera.
-    const dist = 5.2, target = [0, 0.8, 0];
+    // Pulled back far enough that the saucer stays in frame at the steepest pitch.
+    const dist = 5.9, target = [0, 0.65, 0];
     const eye = [target[0] + Math.sin(yaw) * Math.cos(pitch) * dist, target[1] + Math.sin(pitch) * dist, target[2] + Math.cos(yaw) * Math.cos(pitch) * dist];
     const viewProj = mat.multiply(mat.perspective(0.6, size[0] / size[1], 0.1, 50), mat.lookAt(eye, target, [0, 1, 0]));
     // Key light rides with the camera: above and to the viewer's left.
